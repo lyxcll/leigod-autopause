@@ -1,0 +1,42 @@
+name: optional-daily-pause
+
+# 可选：每天北京时间 01:00 自动暂停一次（云端兜底）。
+# 不需要就禁用这个 workflow，或者直接删掉本文件。
+on:
+  schedule:
+    - cron: "0 17 * * *" # UTC 17:00 = 北京时间次日 01:00
+  workflow_dispatch:
+
+jobs:
+  pause:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 调用雷神 pause 接口
+        env:
+          LEIGOD_TOKEN: ${{ secrets.LEIGOD_TOKEN }}
+        run: |
+          set -u
+          if [ -z "${LEIGOD_TOKEN:-}" ]; then
+            echo "::error::没有配置 secrets.LEIGOD_TOKEN"
+            exit 1
+          fi
+
+          body="{\"account_token\":\"${LEIGOD_TOKEN}\",\"lang\":\"zh_CN\"}"
+          resp=$(curl -sS --max-time 30 -X POST \
+            "https://webapi.leigod.com/api/user/pause" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: leigod/11.3.3.2" \
+            -d "$body")
+
+          # 响应里的中文是 GBK 编码，转一下便于阅读（转失败就原样打印）
+          echo "$resp" | iconv -f gbk -t utf-8 2>/dev/null || echo "$resp"
+
+          code=$(printf '%s' "$resp" | sed -n 's/.*"code":\([-0-9]*\).*/\1/p')
+          echo "code=${code:-unknown}"
+          case "${code:-}" in
+            0 | 400803) echo "✅ 已暂停（400803 表示本来就已暂停）" ;;
+            *)
+              echo "::error::暂停失败"
+              exit 1
+              ;;
+          esac

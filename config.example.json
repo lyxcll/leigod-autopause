@@ -1,0 +1,8 @@
+{
+  "idle_minutes": 15,
+  "min_accel_minutes": 3,
+  "check_interval_seconds": 30,
+  "only_when_client_running": true,
+  "game_exe_names": [],
+  "extra_install_dirs": []
+}
