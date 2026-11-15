@@ -20,6 +20,7 @@
   python leigod_autopause.py pause       # 立即暂停一次
   python leigod_autopause.py install     # 注册开机自启（计划任务，失败则回退启动文件夹）
   python leigod_autopause.py uninstall   # 取消开机自启
+  python leigod_autopause.py selftest    # 离线自检（不需要客户端/网络，CI 用）
 
 配置：同目录 config.json（首次运行自动生成）
 """
@@ -48,6 +49,7 @@ MUTEX_NAME = r"Local\LeigodAutoPause"
 _MUTEX = None
 PAUSE_URL = "https://webapi.leigod.com/api/user/pause"
 UA = "leigod/11.3.3.2"
+TOKEN_RE = re.compile(r"account_token=([A-Za-z0-9_\-]{10,})")
 
 DEFAULT_CONFIG = {
     "idle_minutes": 15,            # 键鼠空闲多少分钟后允许暂停
@@ -56,7 +58,7 @@ DEFAULT_CONFIG = {
     "only_when_client_running": True,
     "game_exe_names": [],          # 手动指定游戏主程序（留空 = 自动识别）
     "auto_detect_game_process": True,  # 从雷神日志里自动识别「当前加速的游戏」对应哪些进程
-    "pause_on_game_exit": False,   # 游戏进程退出后立即暂停（不用等空闲阈值）
+    "pause_on_game_exit": True,    # 游戏进程退出后立即暂停（不用等空闲阈值）
     "game_exit_grace_seconds": 90, # 退出后宽限几秒才暂停（防崩溃重启/退出来看攻略）
     "game_absent_pause_seconds": 300,  # 加速中但一直没见游戏在跑，多久后也暂停（0=关）
     "heartbeat_minutes": 30,       # 每多少分钟往日志里打一行心跳（0=不打）
@@ -177,7 +179,7 @@ def newest_files(pattern: str, count: int) -> list[str]:
 def read_token(install_dir: str) -> str | None:
     """从 http 日志里抓 account_token，取最新一条。"""
     logs = newest_files(os.path.join(install_dir, "resources", "llogs", "http-*.log"), 2)
-    pat = re.compile(r"account_token=([A-Za-z0-9_\-]{10,})")
+    pat = TOKEN_RE
     for path in reversed(logs):
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -595,9 +597,10 @@ def cmd_watch(cfg: dict, dry_run: bool = False) -> int:
                         reason = f"游戏已退出，无需再加速（{st['game'] or '游戏'}）"
                 if reason is None and exit_watch and not game_seen and not running:
                     # 这一轮加速从头到尾就没见过游戏进程（关了软件才点加速 / 工具刚重启）
+                    # 只有知道该盯哪些进程时才敢判断，否则宁可不乱停
                     absent = float(cfg.get("game_absent_pause_seconds", 300) or 0)
                     since = st["since"]
-                    if absent > 0 and since:
+                    if absent > 0 and since and info.get("game_wanted"):
                         waited = (datetime.now() - since).total_seconds()
                         if waited >= absent:
                             reason = f"加速中但游戏没在跑，无需再加速（{st['game'] or '游戏'}）"
@@ -690,6 +693,68 @@ def cmd_uninstall(cfg: dict) -> int:
     return 0
 
 
+def cmd_selftest(cfg: dict) -> int:
+    """离线自检：不碰客户端、不发请求，CI 里跑这个。"""
+    import shutil
+    import tempfile
+
+    fails: list[str] = []
+
+    def check(name: str, got, want) -> None:
+        if got != want:
+            fails.append(f"{name}: 期望 {want!r}，实际 {got!r}")
+
+    tmp = tempfile.mkdtemp(prefix="lg-selftest-")
+    try:
+        llogs = os.path.join(tmp, "resources", "llogs")
+        os.makedirs(llogs, exist_ok=True)
+        main_log = os.path.join(llogs, "main-2026-01-02.log")
+        with open(main_log, "w", encoding="utf-8") as f:
+            f.write('[1234][2026-01-02 10:00:00.000] [info] notify [accelerating-status-change] '
+                    '{"id":"110","status":"running","option":{"game_id":110,'
+                    '"game_name":"彩虹六号:围攻 X"}}\n')
+            f.write('[1234][2026-01-02 10:00:00.100] [info]  ipc handle launch-local-game with '
+                    '[{"game_id":110,"game_process":"RainbowSix.exe,RainbowSix_Vulkan.exe"}]\n')
+
+        st = read_accel_state(tmp)
+        check("加速中", st["accelerating"], True)
+        check("游戏名", st["game"], "彩虹六号:围攻 X")
+        check("game_id", st["game_id"], "110")
+        check("计时起点非空", st["since"] is not None, True)
+        check("进程映射", read_game_process_map(tmp).get("110"),
+              ("RainbowSix.exe", "RainbowSix_Vulkan.exe"))
+
+        with open(main_log, "a", encoding="utf-8") as f:
+            f.write('[1234][2026-01-02 10:30:00.000] [info] notify [accelerating-status-change] '
+                    '{"id":"110","status":"normal","option":{"game_id":110,'
+                    '"game_name":"彩虹六号:围攻 X"}}\n')
+        check("停止后不再加速", read_accel_state(tmp)["accelerating"], False)
+
+        # GBK 编码的旧日志也要能读
+        gbk_log = os.path.join(llogs, "main-2026-01-03.log")
+        with open(gbk_log, "wb") as f:
+            f.write('[1234][2026-01-03 08:00:00.000] [info] notify [accelerating-status-change] '
+                    '{"id":"271","status":"running","option":{"game_id":271,'
+                    '"game_name":"文明6"}}\n'.encode("gbk"))
+        check("GBK 日志可读", read_accel_state(tmp)["game"], "文明6")
+
+        check("坏游戏名回退", _clean_game("����6", "271"), "游戏#271")
+        m = TOKEN_RE.search("GET /api/user/info?account_token=abcDEF123456_xyz&lang=zh_CN")
+        check("token 正则", m.group(1) if m else None, "abcDEF123456_xyz")
+        for key in ("idle_minutes", "check_interval_seconds", "auto_detect_game_process"):
+            check(f"配置项 {key}", key in cfg, True)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    if fails:
+        for line in fails:
+            print(f"❌ {line}")
+        print(f"\n自检失败：{len(fails)} 项")
+        return 1
+    print("✅ 自检通过：日志解析 / 进程识别 / token 提取 / 配置读取 都正常")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     setup_stdout()
     cfg = load_config()
@@ -704,6 +769,8 @@ def main(argv: list[str]) -> int:
         return cmd_install(cfg)
     if cmd == "uninstall":
         return cmd_uninstall(cfg)
+    if cmd == "selftest":
+        return cmd_selftest(cfg)
     print(__doc__)
     return 2
 

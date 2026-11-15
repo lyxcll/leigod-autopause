@@ -1,0 +1,22 @@
+name: 💡 想法 / 适配新场景
+description: 新的触发条件、别的客户端版本、别的游戏
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: 想解决什么
+      description: 描述场景，不用给方案
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 客户端日志里的证据（可选）
+      description: |
+        如果是「某个游戏识别不到」，把 `D:\LeiGod_Acc\resources\llogs\main-*.log` 里这两类行贴出来：
+        - `notify [accelerating-status-change] {…}`
+        - `ipc handle launch-local-game with [{…}]`
+      render: text
+    validations:
+      required: false

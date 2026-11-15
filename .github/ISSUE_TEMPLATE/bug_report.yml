@@ -1,0 +1,48 @@
+name: 🐞 问题反馈
+description: 该停没停、停错、报错、状态不对
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **先把 `autopause.log` 最后 20 行贴上来**（记得抹掉 `account_token`，形如 `2a3G***109` 的那种）。
+        没有日志基本没法判断。
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 期望发生什么，实际发生了什么
+      placeholder: 我关了彩六，等了 5 分钟还在计时
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: status 输出
+      description: 运行 `python leigod_autopause.py status` 的完整输出（token 已脱敏，可直接贴）
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: log
+    attributes:
+      label: autopause.log 最后 20 行
+      description: `Get-Content autopause.log -Tail 20`
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: 系统 / Python / 雷神版本
+      placeholder: Windows 11 24H2 · Python 3.12 · 雷神 11.3.2.1
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: config.json（可选）
+      description: 不是默认配置的话贴一下，尤其是 `game_exe_names` / `pause_on_game_exit`
+      render: json
+    validations:
+      required: false

@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "LICENSE"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    name: 自检 (Python ${{ matrix.python-version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 语法编译
+        run: python -m py_compile leigod_autopause.py
+
+      - name: 离线自检（日志解析 / 进程识别 / token 提取）
+        run: python leigod_autopause.py selftest
+
+      - name: 命令行入口可运行
+        run: |
+          python leigod_autopause.py status
+        continue-on-error: true   # 没装雷神客户端的机器上 status 只会返回「没找到安装目录」

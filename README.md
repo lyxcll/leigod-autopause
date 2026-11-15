@@ -61,7 +61,7 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
 
 ## 用法
 
-环境：Windows + Python 3.8+（`python` 在 PATH 里即可）。
+环境：Windows + Python 3.9+（`python` 在 PATH 里即可）。
 
 ```powershell
 # 1. 看一眼现在什么状态、会不会触发（只读，不会暂停）
@@ -79,6 +79,9 @@ python leigod_autopause.py pause
 # 5. 注册开机自启 / 取消
 python leigod_autopause.py install
 python leigod_autopause.py uninstall
+
+# 6. 离线自检（不碰客户端、不发请求，改完代码先跑这个）
+python leigod_autopause.py selftest
 ```
 
 `status` 输出长这样：
@@ -232,6 +235,24 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 `<安装目录>\resources\llogs\http-YYYY-MM-DD.log` 里搜 `account_token=`。
 
 ⚠️ token 等同于账号的加速凭证，**别提交进仓库、别贴到公开 issue**，只放 Secrets。
+
+---
+
+## 维护 / 适配新版本
+
+这个工具只依赖两样东西：**客户端日志格式**和**pause 接口的返回码**。雷神升级后可以这样自查：
+
+| 现象 | 先看哪里 | 怎么修 |
+| --- | --- | --- |
+| `status` 一直「未加速」 | `main-*.log` 里还有没有 `notify [accelerating-status-change]` | 改了字段名就改 `EVENT_RE` |
+| 别人的游戏识别不到进程 | `main-*.log` 里还有没有 `launch-local-game with` | 改了事件名就改 `LAUNCH_RE`；实在没有就在 `config.json` 手动填 `game_exe_names` |
+| 暂停返回 `code=400007` | token 过期 | 客户端重新登录，工具下一轮自动读新 token |
+| 暂停返回别的 code | 接口改了 | 拿返回码开 issue，通常改 `call_pause` 的 `code` 判断 |
+| 一切正常但就是不触发 | `autopause.log` 有没有 `💓 心跳` | 没有心跳 = 进程没了；有心跳 = 看 `📊` 那行它看到了什么 |
+
+CI（`.github/workflows/ci.yml`）在每次 push/PR 时跑 `selftest`：日志解析、进程名识别、token 提取、配置读取 —— 改这几块时它会兜住。
+
+**PR 请自带一个 selftest 断言**（改哪个解析器就在 `cmd_selftest` 里补一个 `check`），这是这个仓库唯一的硬性要求。
 
 ---
 
