@@ -150,6 +150,49 @@ python leigod_autopause.py uninstall
 
 想用计划任务的话，用管理员身份重跑一次 `install` 即可。
 
+启动文件夹里那个 `LeigodAutoPause.vbs` 不是一次性运行，而是个**守护循环**：
+
+```vbs
+Do
+  sh.Run "pythonw.exe ... watch", 0, True   ' 隐藏窗口运行，等它退出
+  WScript.Sleep 5000                       ' 退出就 5 秒后重来
+Loop
+```
+
+所以 `pythonw` 被结束、崩溃、甚至你手动杀了，5 秒后都会自动回来；配合命名互斥量，
+重复启动不会跑出两个实例（第二个会自己退出，日志里写「已经有一个守护在跑了」）。
+
+---
+
+## 故障排查：怎么确认它活着
+
+```powershell
+# 1) 守护进程在不在（应该有一个 pythonw.exe）
+Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" | Select ProcessId,CreationDate
+
+# 2) 最近发生了什么（每 30 分钟有一行 💓 心跳，启动时有一行 📊 快照）
+Get-Content E:\DSH4\leigod-autopause\autopause.log -Tail 8
+
+# 3) 它现在"看到"了什么（会不会触发）
+cd E:\DSH4\leigod-autopause
+python leigod_autopause.py status
+
+# 4) 兜底：手动跑一次自启脚本（VBS 会一直守着，Ctrl+C 结束不了就关窗口）
+wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPause.vbs"
+```
+
+日志里正常长这样：
+
+```
+[22:19:19] 👀 开始守护：D:\LeiGod_Acc，每 30s 检查一次（空闲阈值 15 分钟，游戏退出即暂停）
+[22:19:20] 📊 当前：加速中（彩虹六号:围攻 X），游戏进程 无（自动识别）
+[22:19:22] ✅ 已暂停（加速中但游戏没在跑，无需再加速（彩虹六号:围攻 X））msg=成功
+```
+
+如果是「加速中、游戏进程 在跑」却一直不停 —— 那说明游戏真没退干净（比如 R6 的
+`RainbowSix_BE.exe`、育碧后台还留着），这是预期行为；把 `pause_on_game_exit` 关掉
+或把 `game_exit_grace_seconds` 调小再观察。
+
 ---
 
 ## 常见问题
@@ -169,6 +212,10 @@ python leigod_autopause.py uninstall
 
 **日志文件在哪？**
 `autopause.log`（同目录，自动滚动，只留最近 800 行），超过 512 KB 自动截断。
+
+**之前挂机几个小时都没停？**
+先看日志里有没有 `💓 心跳`。没有 = 进程当时不在（被杀 / 没开机自启），工具再聪明也没用；
+现在 VBS 循环会让它 5 秒内自愈，日志里也能看到重启记录。
 
 ---
 

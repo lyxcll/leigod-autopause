@@ -44,6 +44,8 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 LOG_PATH = os.path.join(BASE_DIR, "autopause.log")
 TOKEN_CACHE = os.path.join(BASE_DIR, ".token_cache")
 TASK_NAME = "LeigodAutoPause"
+MUTEX_NAME = r"Local\LeigodAutoPause"
+_MUTEX = None
 PAUSE_URL = "https://webapi.leigod.com/api/user/pause"
 UA = "leigod/11.3.3.2"
 
@@ -57,6 +59,7 @@ DEFAULT_CONFIG = {
     "pause_on_game_exit": False,   # 游戏进程退出后立即暂停（不用等空闲阈值）
     "game_exit_grace_seconds": 90, # 退出后宽限几秒才暂停（防崩溃重启/退出来看攻略）
     "game_absent_pause_seconds": 300,  # 加速中但一直没见游戏在跑，多久后也暂停（0=关）
+    "heartbeat_minutes": 30,       # 每多少分钟往日志里打一行心跳（0=不打）
     "extra_install_dirs": [],      # 可选：雷神装在别处时手动补充（优先使用）
 }
 
@@ -65,16 +68,23 @@ DEFAULT_CONFIG = {
 # 基础工具
 # --------------------------------------------------------------------------- #
 def setup_stdout() -> None:
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+    # pythonw.exe 拉起时 sys.stdout 可能是 None，直接 reconfigure 会炸
+    for stream in ("stdout", "stderr"):
+        s = getattr(sys, stream, None)
+        try:
+            if s is not None:
+                s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 
 def log(msg: str) -> None:
     line = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}"
-    print(line, flush=True)
+    try:
+        if sys.stdout is not None:      # 无控制台（pythonw）时跳过打印，只写文件
+            print(line, flush=True)
+    except Exception:
+        pass
     try:
         # 日志滚动，避免无限增长
         if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > 512 * 1024:
@@ -509,7 +519,20 @@ def cmd_pause(cfg: dict) -> int:
     return 0 if ok else 1
 
 
+def _single_instance() -> bool:
+    """用命名互斥量防止同时跑两个守护（开机自启 + 手动启动 / 重复安装）。"""
+    global _MUTEX
+    try:
+        _MUTEX = ctypes.windll.kernel32.CreateMutexW(None, False, r"Local\LeigodAutoPause")
+        return ctypes.windll.kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
+    except Exception:
+        return True
+
+
 def cmd_watch(cfg: dict, dry_run: bool = False) -> int:
+    if not _single_instance():
+        log("ℹ️ 已经有一个守护在跑了，本次启动退出")
+        return 0
     install_dirs = find_install_dirs(cfg)
     if not install_dirs:
         log("❌ 没找到雷神安装目录，可在 config.json 的 extra_install_dirs 里补")
@@ -526,7 +549,22 @@ def cmd_watch(cfg: dict, dry_run: bool = False) -> int:
     gone_since = None        # 游戏进程从什么时候开始不见了
     episode_gid = ""         # 本轮加速的游戏 id（中途换游戏要重置判断）
     fail_count = 0
+    last_beat = time.time()
+
+    # 启动先打一行快照，方便事后判断「它到底看到了什么」
+    try:
+        snap = collect(install_dirs, cfg)
+        st0 = snap["state"]
+        running0 = snap.get("game_running") or []
+        log("📊 当前："
+            + ("加速中" + (f"（{st0['game']}）" if st0["game"] else "") if st0["accelerating"] else "未加速")
+            + f"，游戏进程 {', '.join(running0) if running0 else '无'}"
+            + ("（自动识别）" if snap.get("game_auto") else ""))
+    except Exception:
+        pass
+
     while True:
+        running: list[str] = []
         try:
             info = collect(install_dirs, cfg)
             st = info["state"]
@@ -581,6 +619,14 @@ def cmd_watch(cfg: dict, dry_run: bool = False) -> int:
                         if fail_count >= 5:
                             log("⚠️ 连续暂停失败，本次加速不再尝试")
                             paused_since = st["since"]
+
+            hb = float(cfg.get("heartbeat_minutes", 30) or 0)
+            if hb > 0 and time.time() - last_beat >= hb * 60:
+                last_beat = time.time()
+                log(f"💓 心跳：{'加速中' if st['accelerating'] else '未加速'}，"
+                    f"游戏进程 {', '.join(running) if running else '无'}，"
+                    f"空闲 {info['idle'] / 60:.0f} 分钟，"
+                    f"{'本轮已处理' if paused_since is not None else '本轮未处理'}")
         except Exception as e:
             log(f"⚠️ 检查异常: {type(e).__name__}: {e}")
         time.sleep(interval)
@@ -611,8 +657,13 @@ def cmd_install(cfg: dict) -> int:
         vbs = os.path.join(BASE_DIR, "start_hidden.vbs")
         # VBScript 里字符串内的双引号要写成两个
         vbs_cmd = cmd.replace('"', '""')
+        # 用循环包起来：pythonw 万一退出（被杀 / 崩溃 / 升级），5 秒后自动拉起
         with open(vbs, "w", encoding="gbk") as f:
-            f.write(f'CreateObject("WScript.Shell").Run "{vbs_cmd}", 0, False\r\n')
+            f.write('Set sh = CreateObject("WScript.Shell")\n')
+            f.write("Do\n")
+            f.write(f'  sh.Run "{vbs_cmd}", 0, True\n')
+            f.write("  WScript.Sleep 5000\n")
+            f.write("Loop\n")
         link = os.path.join(startup, "LeigodAutoPause.vbs")
         try:
             import shutil
