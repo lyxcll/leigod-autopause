@@ -2,6 +2,7 @@
 .token_cache
 autopause.log
 config.json
+config.json.bak
 start_hidden.vbs
 __pycache__/
 *.pyc

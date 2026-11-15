@@ -52,8 +52,10 @@ DEFAULT_CONFIG = {
     "min_accel_minutes": 3,        # 刚开加速的前几分钟不动（防止刚点就停）
     "check_interval_seconds": 30,  # 守护模式的检查间隔
     "only_when_client_running": True,
-    "game_exe_names": [],          # 可选：例如 ["CivilizationVI.exe"]，配置后还要求这些进程都没在跑
-    "extra_install_dirs": [],      # 可选：雷神装在别处时手动补充
+    "game_exe_names": [],          # 游戏主程序，例如 ["CivilizationVI.exe", "CivilizationVI_DX12.exe"]
+    "pause_on_game_exit": False,   # 游戏进程退出后立即暂停（不用等空闲阈值）
+    "game_exit_grace_seconds": 90, # 退出后宽限几秒才暂停（防崩溃重启/退出来看攻略）
+    "extra_install_dirs": [],      # 可选：雷神装在别处时手动补充（优先使用）
 }
 
 
@@ -118,6 +120,10 @@ def find_install_dirs(cfg: dict) -> list[str]:
         if p and os.path.isdir(p) and p not in dirs:
             dirs.append(p)
 
+    # 配置里指定的目录优先（方便测试 / 装在非常规位置时覆盖自动探测）
+    for extra in cfg.get("extra_install_dirs") or []:
+        add(extra)
+
     for hkey in (r"HKLM", r"HKCU"):
         for base in (
             rf"{hkey}\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
@@ -136,14 +142,12 @@ def find_install_dirs(cfg: dict) -> list[str]:
                 if m:
                     add(m.group(1).strip().strip('"'))
 
-    # 常见默认位置 + 配置里补充的
+    # 常见默认位置
     for guess in (
         r"D:\LeiGod_Acc", r"C:\Program Files\LeiGod_Acc", r"C:\Program Files (x86)\LeiGod_Acc",
         r"D:\Program Files\LeiGod_Acc", r"E:\LeiGod_Acc",
     ):
         add(guess)
-    for extra in cfg.get("extra_install_dirs") or []:
-        add(extra)
 
     # 只要带 llogs 目录的
     return [d for d in dirs if os.path.isdir(os.path.join(d, "resources", "llogs"))]
@@ -364,16 +368,19 @@ def do_pause(install_dir: str, cfg: dict, reason: str) -> bool:
 # --------------------------------------------------------------------------- #
 # 状态展示
 # --------------------------------------------------------------------------- #
-def collect(install_dirs: list[str]) -> dict:
+def collect(install_dirs: list[str], cfg: dict) -> dict:
     install_dir = install_dirs[0] if install_dirs else ""
     state = read_accel_state(install_dir) if install_dir else {
         "accelerating": False, "game": "", "since": None, "status": "no-install"
     }
+    games = cfg.get("game_exe_names") or []
     return {
         "install_dir": install_dir,
         "state": state,
         "idle": idle_seconds(),
         "client": client_running(),
+        "game_wanted": bool(games),
+        "game_running": process_running(games),
     }
 
 
@@ -387,6 +394,10 @@ def print_status(info: dict, cfg: dict) -> None:
         since = st["since"]
         dur = (datetime.now() - since).total_seconds() / 60 if since else 0
         print(f"当前游戏 : {st['game'] or '(未知)'}  已加速 {dur:.1f} 分钟")
+    if info.get("game_wanted"):
+        running = info.get("game_running") or []
+        print(f"游戏进程 : {'在跑 ' + ', '.join(running) if running else '没在跑'}"
+              f"{'（退出即暂停）' if cfg.get('pause_on_game_exit') else ''}")
     print(f"键鼠空闲 : {info['idle'] / 60:.1f} 分钟（阈值 {cfg['idle_minutes']} 分钟）")
     will, why = should_pause(info, cfg)
     print(f"是否触发 : {'会暂停' if will else '不暂停'} —— {why}")
@@ -409,11 +420,9 @@ def should_pause(info: dict, cfg: dict) -> tuple[bool, str]:
         accel_min = (datetime.now() - since).total_seconds() / 60.0
         if accel_min < cfg["min_accel_minutes"]:
             return False, f"刚加速 {accel_min:.1f} 分钟 < {cfg['min_accel_minutes']} 分钟"
-    games = cfg.get("game_exe_names") or []
-    if games:
-        running = process_running(games)
-        if running:
-            return False, f"游戏进程还在: {', '.join(running)}"
+    running = info.get("game_running") or []
+    if running:
+        return False, f"游戏进程还在: {', '.join(running)}"
     return True, "加速中 + 长时间没操作"
 
 
@@ -422,7 +431,7 @@ def should_pause(info: dict, cfg: dict) -> tuple[bool, str]:
 # --------------------------------------------------------------------------- #
 def cmd_status(cfg: dict) -> int:
     install_dirs = find_install_dirs(cfg)
-    info = collect(install_dirs)
+    info = collect(install_dirs, cfg)
     print_status(info, cfg)
     return 0
 
@@ -432,9 +441,8 @@ def cmd_pause(cfg: dict) -> int:
     if not install_dirs:
         log("❌ 没找到雷神安装目录，可在 config.json 的 extra_install_dirs 里补")
         return 1
-    info = collect(install_dirs)
     ok = do_pause(install_dirs[0], cfg, "手动")
-    print_status(collect(install_dirs), cfg)
+    print_status(collect(install_dirs, cfg), cfg)
     return 0 if ok else 1
 
 
@@ -445,32 +453,53 @@ def cmd_watch(cfg: dict, dry_run: bool = False) -> int:
         return 1
     install_dir = install_dirs[0]
     interval = max(10, int(cfg["check_interval_seconds"]))
+    exit_watch = bool(cfg.get("pause_on_game_exit")) and bool(cfg.get("game_exe_names"))
     log(f"👀 开始守护：{install_dir}，每 {interval}s 检查一次"
-        f"（空闲阈值 {cfg['idle_minutes']} 分钟{'，dry-run' if dry_run else ''}）")
+        f"（空闲阈值 {cfg['idle_minutes']} 分钟"
+        f"{'，游戏退出即暂停' if exit_watch else ''}{'，dry-run' if dry_run else ''}）")
 
-    paused_since = None      # 已经为哪一轮加速暂停过（按加速起始时间去重）
+    paused_since = None      # 这一轮加速是否已经处理过（按加速起始时间去重）
+    game_seen = False        # 本轮加速里见到过游戏进程没
+    gone_since = None        # 游戏进程从什么时候开始不见了
     fail_count = 0
     while True:
         try:
-            info = collect(install_dirs)
+            info = collect(install_dirs, cfg)
             st = info["state"]
             if not st["accelerating"]:
-                paused_since = None
+                paused_since = game_seen = gone_since = None
                 fail_count = 0
             else:
                 if paused_since is not None and st["since"] != paused_since:
-                    paused_since = None  # 客户端重新开始了一轮加速
-                will, why = should_pause(info, cfg)
-                if will and paused_since is None:
+                    # 客户端重新开始了一轮加速
+                    paused_since = game_seen = gone_since = None
+
+                running = info.get("game_running") or []
+                if running:
+                    game_seen, gone_since = True, None
+                elif game_seen and gone_since is None:
+                    gone_since = datetime.now()
+
+                reason = None
+                if exit_watch and game_seen and not running and gone_since:
+                    waited = (datetime.now() - gone_since).total_seconds()
+                    if waited >= float(cfg.get("game_exit_grace_seconds", 90)):
+                        reason = f"游戏已退出，无需再加速（{st['game'] or '游戏'}）"
+                if reason is None:
+                    will, why = should_pause(info, cfg)
+                    if will:
+                        reason = why
+
+                if reason and paused_since is None:
                     if dry_run:
-                        log(f"🧪 [dry-run] 会暂停：{why}（游戏 {st['game']}）")
+                        log(f"🧪 [dry-run] 会暂停：{reason}")
                         paused_since = st["since"]
-                    elif do_pause(install_dir, cfg, why):
+                    elif do_pause(install_dir, cfg, reason):
                         paused_since = st["since"]
                         fail_count = 0
                     else:
                         fail_count += 1
-                        # 连续失败 5 次（约 2.5 分钟）就放弃本次会话，避免刷屏
+                        # 连续失败 5 次就放弃本轮，避免刷屏
                         if fail_count >= 5:
                             log("⚠️ 连续暂停失败，本次加速不再尝试")
                             paused_since = st["since"]

@@ -3,6 +3,11 @@
   "min_accel_minutes": 3,
   "check_interval_seconds": 30,
   "only_when_client_running": true,
-  "game_exe_names": [],
+  "game_exe_names": [
+    "CivilizationVI.exe",
+    "CivilizationVI_DX12.exe"
+  ],
+  "pause_on_game_exit": true,
+  "game_exit_grace_seconds": 90,
   "extra_install_dirs": []
 }

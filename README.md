@@ -4,13 +4,16 @@
 
 纯本地小工具：单文件 Python，**只用标准库**，不需要装依赖、不需要抓包、不需要手动填 token。
 
+两种触发方式，随便配一个或都开：
+
 ```
-加速中 + 键盘鼠标空闲 ≥ 15 分钟 + 这次加速已持续 ≥ 3 分钟
+① 游戏退出即暂停    文明6 一关，90 秒后立刻停掉计时（默认，最省）
+② 挂机自动暂停      加速中 + 键鼠空闲 ≥ 15 分钟 + 本轮已加速 ≥ 3 分钟
         ↓
 自动调用官方 pause 接口，把计时停掉
 ```
 
-你回来动一下鼠标、或者客户端里点「恢复」，就继续计时；下次再挂机它还会自动暂停。
+你下次开游戏、客户端里点「恢复」，就继续计时。
 
 ---
 
@@ -81,6 +84,7 @@ python leigod_autopause.py uninstall
 客户端   : 运行中
 加速状态 : 加速中 (log status=running)
 当前游戏 : 文明6  已加速 42.3 分钟
+游戏进程 : 在跑 CivilizationVI.exe（退出即暂停）
 键鼠空闲 : 18.5 分钟（阈值 15 分钟）
 是否触发 : 会暂停 —— 加速中 + 长时间没操作
 ========================================================
@@ -88,7 +92,7 @@ python leigod_autopause.py uninstall
 
 ### 配置 `config.json`
 
-首次运行自动生成在同目录：
+首次运行自动生成在同目录（当前默认配置已按文明6 调好）：
 
 ```json
 {
@@ -96,7 +100,9 @@ python leigod_autopause.py uninstall
   "min_accel_minutes": 3,
   "check_interval_seconds": 30,
   "only_when_client_running": true,
-  "game_exe_names": [],
+  "game_exe_names": ["CivilizationVI.exe", "CivilizationVI_DX12.exe"],
+  "pause_on_game_exit": true,
+  "game_exit_grace_seconds": 90,
   "extra_install_dirs": []
 }
 ```
@@ -107,10 +113,23 @@ python leigod_autopause.py uninstall
 | `min_accel_minutes` | 刚开加速的前几分钟不动，防止「刚点开就被停」 |
 | `check_interval_seconds` | 守护轮询间隔（最小 10） |
 | `only_when_client_running` | 客户端都没开就别折腾 |
-| `game_exe_names` | 可选保险：填了之后还要求这些进程都没在跑，例如 `["CivilizationVI.exe"]`。适合「我在看剧 / 挂下载，但游戏其实没开」的场景 |
-| `extra_install_dirs` | 雷神装在非常规目录时手动补，例如 `["E:\\LeiGod_Acc"]` |
+| `game_exe_names` | 游戏主程序。填了之后：① 它们只要还在跑，就**绝不**因为「空闲」暂停；② 若开了 `pause_on_game_exit`，它们全部退出就立即暂停 |
+| `pause_on_game_exit` | **游戏退出即暂停**。默认开启；关掉就只剩挂机空闲判断 |
+| `game_exit_grace_seconds` | 游戏退出后宽限几秒才停，默认 90。给「退出重进 / 崩溃重启 / 退出来查攻略」留余量 |
+| `extra_install_dirs` | 雷神装在非常规目录时手动补，例如 `["E:\\LeiGod_Acc"]`；配了会优先使用 |
 
 改完配置**不用重启**（守护每轮都重新读），但改 `config.json` 的编码请保持 UTF-8。
+
+### 文明6 已配好，开箱即用
+
+雷神客户端日志里自己声明了文明6 的进程名（`game_process` 字段），所以直接抄过来：
+
+| 场景 | 行为 |
+| --- | --- |
+| 文明6 在跑、你挂机 15 分钟 | **不暂停**（游戏进程还在） |
+| 文明6 关掉（含 DX12 版） | 90 秒后**立刻暂停**计时，不用等空闲 15 分钟 |
+| 文明6 关了又马上重开 | 90 秒宽限期内重开，不会被误停 |
+| 你换别的游戏 / 看剧挂机 | 回到「空闲 15 分钟」规则 |
 
 ### 开机自启
 
