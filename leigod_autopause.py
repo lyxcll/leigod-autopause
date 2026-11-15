@@ -52,9 +52,11 @@ DEFAULT_CONFIG = {
     "min_accel_minutes": 3,        # 刚开加速的前几分钟不动（防止刚点就停）
     "check_interval_seconds": 30,  # 守护模式的检查间隔
     "only_when_client_running": True,
-    "game_exe_names": [],          # 游戏主程序，例如 ["CivilizationVI.exe", "CivilizationVI_DX12.exe"]
+    "game_exe_names": [],          # 手动指定游戏主程序（留空 = 自动识别）
+    "auto_detect_game_process": True,  # 从雷神日志里自动识别「当前加速的游戏」对应哪些进程
     "pause_on_game_exit": False,   # 游戏进程退出后立即暂停（不用等空闲阈值）
     "game_exit_grace_seconds": 90, # 退出后宽限几秒才暂停（防崩溃重启/退出来看攻略）
+    "game_absent_pause_seconds": 300,  # 加速中但一直没见游戏在跑，多久后也暂停（0=关）
     "extra_install_dirs": [],      # 可选：雷神装在别处时手动补充（优先使用）
 }
 
@@ -195,6 +197,55 @@ EVENT_RE = re.compile(
 )
 
 STOP_STATUSES = {"normal", "stop", "stopped", "failed"}
+
+# 客户端每次「本地启动游戏」都会记一条，里面带着游戏自己的进程名，例如：
+#   ipc handle launch-local-game with [{"game_id":110,"game_process":"RainbowSix.exe,RainbowSix_Vulkan.exe",...}]
+# 用它就能自动知道「当前加速的游戏」关掉没，不用一游戏一配置。
+LAUNCH_RE = re.compile(r"launch-local-game with (\[.*\])")
+_GAME_PROC_CACHE: dict[str, tuple[float, int, dict[str, tuple[str, ...]]]] = {}
+
+
+def _scan_launch_map(path: str) -> dict[str, tuple[str, ...]]:
+    """解析单个主日志里的 launch-local-game 事件，返回 {game_id: (exe, ...)}。按 mtime 缓存。"""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}
+    cached = _GAME_PROC_CACHE.get(path)
+    if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
+        return cached[2]
+    mapping: dict[str, tuple[str, ...]] = {}
+    try:
+        text = _decode(open(path, "rb").read())
+    except Exception:
+        text = ""
+    for m in LAUNCH_RE.finditer(text):
+        try:
+            items = json.loads(m.group(1))
+        except Exception:
+            continue
+        if isinstance(items, dict):
+            items = [items]
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            gid = str(it.get("game_id") or "").strip()
+            procs = tuple(p.strip() for p in str(it.get("game_process") or "").split(",")
+                          if p.strip())
+            if gid and procs:
+                mapping[gid] = procs
+    _GAME_PROC_CACHE[path] = (st.st_mtime, st.st_size, mapping)
+    return mapping
+
+
+def read_game_process_map(install_dir: str, days: int = 7) -> dict[str, tuple[str, ...]]:
+    """把最近几天主日志里的 game_id -> 进程名 合起来。"""
+    pattern = os.path.join(install_dir, "resources", "llogs", "main-*.log")
+    files = sorted(glob.glob(pattern), key=lambda p: os.path.getmtime(p))[-days:]
+    merged: dict[str, tuple[str, ...]] = {}
+    for path in files:          # 后写的日志覆盖前面的
+        merged.update(_scan_launch_map(path))
+    return merged
 
 
 def _decode(raw: bytes) -> str:
@@ -373,14 +424,25 @@ def collect(install_dirs: list[str], cfg: dict) -> dict:
     state = read_accel_state(install_dir) if install_dir else {
         "accelerating": False, "game": "", "since": None, "status": "no-install"
     }
-    games = cfg.get("game_exe_names") or []
+    gid = str(state.get("game_id") or "")
+    exes: list[str] = []
+    auto_used = False
+    if install_dir and cfg.get("auto_detect_game_process", True) and gid:
+        procs = read_game_process_map(install_dir).get(gid) or ()
+        if procs:
+            exes, auto_used = list(procs), True
+    if not exes:
+        exes = list(cfg.get("game_exe_names") or [])
     return {
         "install_dir": install_dir,
         "state": state,
         "idle": idle_seconds(),
         "client": client_running(),
-        "game_wanted": bool(games),
-        "game_running": process_running(games),
+        "game_ids": gid,
+        "game_names": exes,
+        "game_auto": auto_used,
+        "game_wanted": bool(exes),
+        "game_running": process_running(exes),
     }
 
 
@@ -396,8 +458,9 @@ def print_status(info: dict, cfg: dict) -> None:
         print(f"当前游戏 : {st['game'] or '(未知)'}  已加速 {dur:.1f} 分钟")
     if info.get("game_wanted"):
         running = info.get("game_running") or []
+        src = "自动识别" if info.get("game_auto") else "手动配置"
         print(f"游戏进程 : {'在跑 ' + ', '.join(running) if running else '没在跑'}"
-              f"{'（退出即暂停）' if cfg.get('pause_on_game_exit') else ''}")
+              f"（{src}：{', '.join(info.get('game_names') or [])}）")
     print(f"键鼠空闲 : {info['idle'] / 60:.1f} 分钟（阈值 {cfg['idle_minutes']} 分钟）")
     will, why = should_pause(info, cfg)
     print(f"是否触发 : {'会暂停' if will else '不暂停'} —— {why}")
@@ -453,7 +516,7 @@ def cmd_watch(cfg: dict, dry_run: bool = False) -> int:
         return 1
     install_dir = install_dirs[0]
     interval = max(10, int(cfg["check_interval_seconds"]))
-    exit_watch = bool(cfg.get("pause_on_game_exit")) and bool(cfg.get("game_exe_names"))
+    exit_watch = bool(cfg.get("pause_on_game_exit", True))
     log(f"👀 开始守护：{install_dir}，每 {interval}s 检查一次"
         f"（空闲阈值 {cfg['idle_minutes']} 分钟"
         f"{'，游戏退出即暂停' if exit_watch else ''}{'，dry-run' if dry_run else ''}）")
@@ -461,18 +524,25 @@ def cmd_watch(cfg: dict, dry_run: bool = False) -> int:
     paused_since = None      # 这一轮加速是否已经处理过（按加速起始时间去重）
     game_seen = False        # 本轮加速里见到过游戏进程没
     gone_since = None        # 游戏进程从什么时候开始不见了
+    episode_gid = ""         # 本轮加速的游戏 id（中途换游戏要重置判断）
     fail_count = 0
     while True:
         try:
             info = collect(install_dirs, cfg)
             st = info["state"]
+            gid = info.get("game_ids") or ""
             if not st["accelerating"]:
                 paused_since = game_seen = gone_since = None
+                episode_gid = ""
                 fail_count = 0
             else:
                 if paused_since is not None and st["since"] != paused_since:
                     # 客户端重新开始了一轮加速
                     paused_since = game_seen = gone_since = None
+                if gid != episode_gid:
+                    # 换游戏了，重新观察新游戏的进程
+                    episode_gid = gid
+                    game_seen, gone_since = False, None
 
                 running = info.get("game_running") or []
                 if running:
@@ -485,6 +555,14 @@ def cmd_watch(cfg: dict, dry_run: bool = False) -> int:
                     waited = (datetime.now() - gone_since).total_seconds()
                     if waited >= float(cfg.get("game_exit_grace_seconds", 90)):
                         reason = f"游戏已退出，无需再加速（{st['game'] or '游戏'}）"
+                if reason is None and exit_watch and not game_seen and not running:
+                    # 这一轮加速从头到尾就没见过游戏进程（关了软件才点加速 / 工具刚重启）
+                    absent = float(cfg.get("game_absent_pause_seconds", 300) or 0)
+                    since = st["since"]
+                    if absent > 0 and since:
+                        waited = (datetime.now() - since).total_seconds()
+                        if waited >= absent:
+                            reason = f"加速中但游戏没在跑，无需再加速（{st['game'] or '游戏'}）"
                 if reason is None:
                     will, why = should_pause(info, cfg)
                     if will:

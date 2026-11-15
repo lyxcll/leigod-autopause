@@ -7,13 +7,15 @@
 两种触发方式，随便配一个或都开：
 
 ```
-① 游戏退出即暂停    文明6 一关，90 秒后立刻停掉计时（默认，最省）
+① 游戏退出即暂停    正在加速的游戏一关，90 秒后立刻停掉计时（默认）
 ② 挂机自动暂停      加速中 + 键鼠空闲 ≥ 15 分钟 + 本轮已加速 ≥ 3 分钟
         ↓
 自动调用官方 pause 接口，把计时停掉
 ```
 
-你下次开游戏、客户端里点「恢复」，就继续计时。
+**不用按游戏配置**：雷神客户端每次启动游戏都会在主日志里写下这条游戏的进程名
+（`ipc handle launch-local-game with [{"game_id":110,"game_process":"RainbowSix.exe,RainbowSix_Vulkan.exe"}]`），
+工具直接读它，所以加速文明6、彩六、还是别的什么，关掉就停。下次开游戏、客户端点「恢复」即继续计时。
 
 ---
 
@@ -40,8 +42,11 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
 2. **读加速状态**：主日志里每个加速状态变化都会打一条
    `notify [accelerating-status-change] {"id":"271","status":"running","option":{"game_id":271,"game_name":"文明6"}}`。
    `status=running` 表示正在加速；`normal` 表示已停。工具解析最近两个日志文件，还原「当前是否加速、什么游戏、这一轮从什么时候开始」。
-3. **读空闲时长**：Windows `GetLastInputInfo`，即真实的键鼠空闲时间（不是工具自己猜的）。
-4. **暂停**：`POST https://webapi.leigod.com/api/user/pause`，body `{"account_token": "...", "lang": "zh_CN"}`。
+3. **知道是哪个游戏**：主日志里还有 `ipc handle launch-local-game with [{"game_id":110,"game_process":"RainbowSix.exe,RainbowSix_Vulkan.exe"}]`，
+   工具用最近 7 天日志里的这类事件建一张 `game_id → 进程名` 表（按文件 mtime 缓存，不会每轮重读），
+   于是「当前加速的是哪个游戏、它该看哪些进程」全自动，换游戏不用改配置。
+4. **读空闲时长**：Windows `GetLastInputInfo`，即真实的键鼠空闲时间（不是工具自己猜的）。
+5. **暂停**：`POST https://webapi.leigod.com/api/user/pause`，body `{"account_token": "...", "lang": "zh_CN"}`。
    - `code=0` → 暂停成功
    - `code=400803` → 本来就已暂停（算成功）
    - `code=400007` → 登录态过期，去客户端重新登录
@@ -100,9 +105,11 @@ python leigod_autopause.py uninstall
   "min_accel_minutes": 3,
   "check_interval_seconds": 30,
   "only_when_client_running": true,
-  "game_exe_names": ["CivilizationVI.exe", "CivilizationVI_DX12.exe"],
+  "game_exe_names": [],
+  "auto_detect_game_process": true,
   "pause_on_game_exit": true,
   "game_exit_grace_seconds": 90,
+  "game_absent_pause_seconds": 300,
   "extra_install_dirs": []
 }
 ```
@@ -113,23 +120,27 @@ python leigod_autopause.py uninstall
 | `min_accel_minutes` | 刚开加速的前几分钟不动，防止「刚点开就被停」 |
 | `check_interval_seconds` | 守护轮询间隔（最小 10） |
 | `only_when_client_running` | 客户端都没开就别折腾 |
-| `game_exe_names` | 游戏主程序。填了之后：① 它们只要还在跑，就**绝不**因为「空闲」暂停；② 若开了 `pause_on_game_exit`，它们全部退出就立即暂停 |
+| `auto_detect_game_process` | **自动识别**当前加速游戏的进程名（从雷神日志的 `launch-local-game` 事件里读），默认开 |
+| `game_exe_names` | 手动指定进程，留空即自动识别；填了则优先用手填的（自动识别失败时的兜底） |
 | `pause_on_game_exit` | **游戏退出即暂停**。默认开启；关掉就只剩挂机空闲判断 |
 | `game_exit_grace_seconds` | 游戏退出后宽限几秒才停，默认 90。给「退出重进 / 崩溃重启 / 退出来查攻略」留余量 |
+| `game_absent_pause_seconds` | 加速中但一直没见游戏在跑，多久后也停，默认 300。用于「先关游戏、后忘了关加速」或工具重启后没看到游戏进程的场景；填 `0` 关闭这条 |
 | `extra_install_dirs` | 雷神装在非常规目录时手动补，例如 `["E:\\LeiGod_Acc"]`；配了会优先使用 |
 
 改完配置**不用重启**（守护每轮都重新读），但改 `config.json` 的编码请保持 UTF-8。
 
-### 文明6 已配好，开箱即用
+### 不用按游戏配置
 
-雷神客户端日志里自己声明了文明6 的进程名（`game_process` 字段），所以直接抄过来：
+进程名是雷神客户端自己记在日志里的（`game_process` 字段），工具自动跟着当前加速的游戏走：
 
 | 场景 | 行为 |
 | --- | --- |
-| 文明6 在跑、你挂机 15 分钟 | **不暂停**（游戏进程还在） |
-| 文明6 关掉（含 DX12 版） | 90 秒后**立刻暂停**计时，不用等空闲 15 分钟 |
-| 文明6 关了又马上重开 | 90 秒宽限期内重开，不会被误停 |
-| 你换别的游戏 / 看剧挂机 | 回到「空闲 15 分钟」规则 |
+| 游戏在跑、你挂机 15 分钟 | **不暂停**（游戏进程还在） |
+| 关掉正在加速的游戏（文明6、彩六……任何游戏） | 90 秒后**立刻暂停**计时，不用等空闲 15 分钟 |
+| 关了又马上重开 | 90 秒宽限期内重开，不会被误停 |
+| 中途换了游戏 | 自动切到新游戏的进程继续盯 |
+| 还没开游戏就先点了加速 | 5 分钟后仍没见游戏进程 → 暂停（`game_absent_pause_seconds`） |
+| 看剧 / 挂下载，游戏没开 | 回到「空闲 15 分钟」规则 |
 
 ### 开机自启
 
