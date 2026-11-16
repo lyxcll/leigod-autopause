@@ -12,3 +12,6 @@
 
 *.log     -text
 .token_cache -text
+
+# 图标是二进制，别做换行符转换
+*.ico     -text

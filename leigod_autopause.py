@@ -40,7 +40,15 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+def _app_dir() -> str:
+    # PyInstaller 打包后 __file__ 在临时解包目录，配置/日志要跟着 exe 走
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+BASE_DIR = _app_dir()
+VERSION = "1.1.0"
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 LOG_PATH = os.path.join(BASE_DIR, "autopause.log")
 TOKEN_CACHE = os.path.join(BASE_DIR, ".token_cache")
@@ -641,9 +649,15 @@ def _pythonw() -> str:
     return cand if os.path.exists(cand) else exe
 
 
+def _watch_cmd() -> str:
+    """后台守护的启动命令行（打包后直接用 exe 自己）。"""
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}" watch'
+    return f'"{_pythonw()}" "{os.path.abspath(__file__)}" watch'
+
+
 def cmd_install(cfg: dict) -> int:
-    script = os.path.abspath(__file__)
-    cmd = f'"{_pythonw()}" "{script}" watch'
+    cmd = _watch_cmd()
     # 1) 计划任务（登录时启动，无窗口）
     r = subprocess.run(
         ["schtasks", "/Create", "/F", "/SC", "ONLOGON", "/TN", TASK_NAME,
@@ -675,8 +689,41 @@ def cmd_install(cfg: dict) -> int:
         except Exception as e:
             log(f"❌ 自启安装失败: {e}")
             return 1
-    log("提示：现在就能用 `python leigod_autopause.py watch` 手动跑起来")
+    if getattr(sys, "frozen", False):
+        log("提示：已开始后台守护，进度看 autopause.log（再双击 exe 可回到这个菜单）")
+    else:
+        log("提示：现在就能用 `python leigod_autopause.py watch` 手动跑起来")
+    _spawn_watch_now()
     return 0
+
+
+def _spawn_watch_now() -> None:
+    """安装完立刻拉起一个守护，不用等下次登录（已有实例会被互斥量挡住）。"""
+    DETACHED = 0x00000008
+    try:
+        if getattr(sys, "frozen", False):
+            subprocess.Popen([sys.executable, "watch"], cwd=BASE_DIR,
+                             creationflags=DETACHED, close_fds=True)
+        else:
+            subprocess.Popen([_pythonw(), os.path.abspath(__file__), "watch"],
+                             cwd=BASE_DIR, creationflags=DETACHED, close_fds=True)
+        log("🚀 已拉起后台守护")
+    except Exception as e:
+        log(f"⚠️ 拉起守护失败（下次登录仍会自动启动）: {e}")
+
+
+def _kill_running() -> None:
+    """结束正在跑的守护实例（只结束本工具的，不动别的 python 进程）。"""
+    if getattr(sys, "frozen", False):
+        name = os.path.basename(sys.executable)
+        subprocess.run(["taskkill", "/F", "/IM", name], capture_output=True)
+        return
+    ps = (
+        "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
+        "Where-Object { $_.CommandLine -like '*leigod_autopause.py*' } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+    )
+    subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True)
 
 
 def cmd_uninstall(cfg: dict) -> int:
@@ -690,7 +737,58 @@ def cmd_uninstall(cfg: dict) -> int:
     if os.path.exists(link):
         os.remove(link)
         log("✅ 已删除启动文件夹自启项")
+    # 自启项删了，但当前实例还在跑，得手动结束（否则它会继续守着）
+    _kill_running()
+    log("✅ 已结束正在运行的守护进程")
     return 0
+
+
+def cmd_menu(cfg: dict) -> int:
+    """双击 exe 时的傻瓜菜单（不传参数才会进这里）。"""
+    actions = {
+        "1": ("安装并后台守护", cmd_install),
+        "2": ("只看当前状态", cmd_status),
+        "3": ("立即暂停一次", cmd_pause),
+        "4": ("卸载自启并停止守护", cmd_uninstall),
+    }
+    while True:
+        print()
+        print("=" * 58)
+        print(f"  雷神加速器 · 挂机自动暂停   v{VERSION}")
+        print("=" * 58)
+        print("  1) 安装并后台守护（推荐，开机自启）")
+        print("  2) 只看现在状态（只读，不会暂停）")
+        print("  3) 立即暂停一次")
+        print("  4) 卸载自启并停止守护")
+        print("  9) 打开程序目录（看日志）")
+        print("  0) 退出")
+        print()
+        try:
+            choice = (input("请选择 [1/2/3/4/9/0]: ") or "").strip()
+        except (EOFError, KeyboardInterrupt):
+            return 0
+        if choice == "0":
+            return 0
+        if choice == "9":
+            try:
+                os.startfile(BASE_DIR)
+            except Exception as e:
+                print(f"打不开目录: {e}")
+            continue
+        item = actions.get(choice)
+        if not item:
+            continue
+        title, fn = item
+        print()
+        print(f"--- {title} ---")
+        try:
+            fn(cfg)
+        except Exception as e:
+            print(f"❌ 出错了: {type(e).__name__}: {e}")
+        try:
+            input("\n按回车返回菜单…")
+        except (EOFError, KeyboardInterrupt):
+            return 0
 
 
 def cmd_selftest(cfg: dict) -> int:
@@ -758,7 +856,15 @@ def cmd_selftest(cfg: dict) -> int:
 def main(argv: list[str]) -> int:
     setup_stdout()
     cfg = load_config()
-    cmd = argv[1] if len(argv) > 1 else "status"
+    cmd = argv[1] if len(argv) > 1 else ""
+    if cmd in ("--version", "-v", "version"):
+        print(f"leigod-autopause {VERSION}")
+        return 0
+    if not cmd:
+        # 双击 exe（没带参数）→ 菜单；命令行跑脚本 → 默认 status
+        if getattr(sys, "frozen", False):
+            return cmd_menu(cfg)
+        cmd = "status"
     if cmd == "status":
         return cmd_status(cfg)
     if cmd == "pause":

@@ -3,6 +3,7 @@
 [![CI](https://github.com/lyxcll/leigod-autopause/actions/workflows/ci.yml/badge.svg)](https://github.com/lyxcll/leigod-autopause/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](leigod_autopause.py)
+[![exe](https://img.shields.io/badge/download-.exe%208.9%20MB-6D5BD0.svg)](https://github.com/lyxcll/leigod-autopause/releases/latest/download/LeigodAutoPause.exe)
 
 挂机 / 出门没关电脑时，自动把**雷神加速器**的计时暂停掉，避免白烧时长。
 
@@ -65,9 +66,35 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
 
 ## 用法
 
-### 最快：只下这一个文件
+### 最省事：下载 exe，双击就用（免 Python）
 
-[`leigod_autopause.py`](https://github.com/lyxcll/leigod-autopause/releases/latest/download/leigod_autopause.py) ← 点这里下载（31 KB，单文件，无依赖）
+[`LeigodAutoPause.exe`](https://github.com/lyxcll/leigod-autopause/releases/latest/download/LeigodAutoPause.exe) ← 点这里下载（8.9 MB，单文件，**不用装 Python**）
+
+1. 丢进任意目录，比如 `D:\Tools\leigod-autopause\`（`config.json`、`autopause.log` 都生成在这个目录里）；
+2. **双击**它，出现菜单：
+
+   ```
+   ==========================================================
+     雷神加速器 · 挂机自动暂停   v1.1.0
+   ==========================================================
+     1) 安装并后台守护（推荐，开机自启）
+     2) 只看现在状态（只读，不会暂停）
+     3) 立即暂停一次
+     4) 卸载自启并停止守护
+     9) 打开程序目录（看日志）
+     0) 退出
+   ```
+
+3. 按 `1` 回车。它会注册开机自启、立刻在后台跑起来，然后告诉你去看 `autopause.log`。
+
+> Windows 第一次运行会提示「已保护你的电脑」：点 **更多信息 → 仍要运行** 即可。
+> 这个 exe 没有代码签名（个人项目），但代码全部开源，就在本仓库的 `leigod_autopause.py` 里。
+
+不需要 GitHub 账号，不需要填 token —— 它读**你自己电脑上**雷神客户端的日志拿登录态。
+
+### 或者：只下 Python 单文件
+
+[`leigod_autopause.py`](https://github.com/lyxcll/leigod-autopause/releases/latest/download/leigod_autopause.py) ← 点这里下载（31 KB，单文件，无依赖，需要本机有 Python 3.9+）
 
 放进任意目录（比如 `D:\Tools\leigod-autopause\`），然后：
 
@@ -91,6 +118,9 @@ python leigod_autopause.py install
 ### 全部命令
 
 环境：Windows + Python 3.9+（`python` 在 PATH 里即可）。
+
+> 用 exe 版的话，把下面的 `python leigod_autopause.py` 换成 `LeigodAutoPause.exe` 就行，
+> 比如 `LeigodAutoPause.exe status`、`LeigodAutoPause.exe selftest`。
 
 ```powershell
 # 1. 看一眼现在什么状态、会不会触发（只读，不会暂停）
@@ -239,8 +269,10 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 **token 什么时候失效？**
 你在客户端退出登录 / 换号后失效（返回 `400007`）。工具每轮都重新读日志拿最新 token，所以重新登录后会自动跟上。
 
-**杀毒软件报警？**
-没有网络服务、没有注入，只是个读日志 + 发一个 HTTP 请求的 Python 脚本。不放心的可以先用 `--dry-run` 跑几天。
+**杀毒软件 / SmartScreen 报警？**
+没有网络服务、没有注入，只是个读日志 + 发一个 HTTP 请求的小工具。exe 是 PyInstaller 打的、没签名，
+所以下载后第一次运行会出现「已保护你的电脑」——点 **更多信息 → 仍要运行**。
+不放心的可以直接用 Python 版 `leigod_autopause.py`（内容完全开源），或者先 `--dry-run` 跑几天。
 
 **日志文件在哪？**
 `autopause.log`（同目录，自动滚动，只留最近 800 行），超过 512 KB 自动截断。
@@ -280,6 +312,8 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 | 一切正常但就是不触发 | `autopause.log` 有没有 `💓 心跳` | 没有心跳 = 进程没了；有心跳 = 看 `📊` 那行它看到了什么 |
 
 CI（`.github/workflows/ci.yml`）在每次 push/PR 时跑 `selftest`：日志解析、进程名识别、token 提取、配置读取 —— 改这几块时它会兜住。
+
+exe 由 `build_exe.py`（PyInstaller）打出，`build-exe.yml` 在打 tag 时自动构建并附到 Release，你也可以本地 `python build_exe.py` 复现。
 
 **PR 请自带一个 selftest 断言**（改哪个解析器就在 `cmd_selftest` 里补一个 `check`），这是这个仓库唯一的硬性要求。
 
