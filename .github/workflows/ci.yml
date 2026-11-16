@@ -7,6 +7,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 自检只需要读代码；显式声明，避免继承仓库的默认读写权限
+permissions:
+  contents: read
+
 jobs:
   selftest:
     name: 自检 (Python ${{ matrix.python-version }})

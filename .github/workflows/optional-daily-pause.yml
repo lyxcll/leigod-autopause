@@ -7,6 +7,9 @@ on:
     - cron: "0 17 * * *" # UTC 17:00 = 北京时间次日 01:00
   workflow_dispatch:
 
+permissions:
+  contents: read   # 只发一个 HTTPS 请求，不需要写仓库
+
 jobs:
   pause:
     runs-on: ubuntu-latest
@@ -29,8 +32,9 @@ jobs:
             -H "User-Agent: leigod/11.3.3.2" \
             --data @-)
 
-          # 响应里的中文是 GBK 编码，转一下便于阅读（转失败就原样打印）
-          echo "$resp" | iconv -f gbk -t utf-8 2>/dev/null || echo "$resp"
+          # 响应里可能带账号标识：打印前先脱敏，别把整包原样贴进公开的 Actions 日志
+          safe=$(printf '%s' "$resp" | sed -E 's/(account_token"?[:=]"?)[^",&}]+/\1***/g')
+          echo "$safe" | iconv -f gbk -t utf-8 2>/dev/null || echo "$safe"
 
           code=$(printf '%s' "$resp" | sed -n 's/.*"code":\([-0-9]*\).*/\1/p')
           echo "code=${code:-unknown}"
