@@ -15,8 +15,9 @@
 
 - 临时 `.pfx` 放进 `try/finally`：密码错、签名失败、校验失败都会删掉，不再残留私钥。
 - 私钥改用 `EphemeralKeySet` 加载：不写进用户证书库、不能被再次导出。
-- 临时证书文件 ACL 收紧到只留当前用户；默认时间戳改 https，
-  若 PowerShell 不接受该 URL（`Set-AuthenticodeSignature` 只认 `http://` 形式）自动退回不带时间戳并提示。
+- 临时证书文件 ACL 收紧到只留当前用户；时间戳默认用 DigiCert 的 `http://` 端点
+  （Windows PowerShell 的 `Set-AuthenticodeSignature` 只接受 `http://` 形式，传 `https://` 会直接报错），
+  签名失败时自动退回「不带时间戳签名」。
 
 **测试脚本（`test_game_exit.py`）**
 

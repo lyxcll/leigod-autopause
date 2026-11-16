@@ -19,12 +19,13 @@
 # 安全约定（审计后加）：
 #   - 私钥用 EphemeralKeySet 加载，不写进用户证书库、也不允许再次导出；
 #   - CI 解码出来的临时 .pfx 放在 try/finally 里，成功失败都会被删除；
-#   - 时间戳服务默认走 https。
+#   - 时间戳默认用 DigiCert 的 http 端点：Windows PowerShell 的 Set-AuthenticodeSignature
+#     只接受 http:// 形式（传 https:// 直接报错），时间戳真实性由 CA 签名的 token 保证。
 param(
     [Parameter(Mandatory = $true)][string]$Path,
     [string]$PfxPath = $env:CODE_SIGN_PFX,
     [string]$PfxPassword = $env:CODE_SIGN_PFX_PASSWORD,
-    [string]$TimestampUrl = "https://timestamp.digicert.com"
+    [string]$TimestampUrl = "http://timestamp.digicert.com"
 )
 
 $ErrorActionPreference = "Stop"
