@@ -64,7 +64,61 @@
 - `optional-daily-pause.yml` 只打印响应状态码，不打印 token；token 来自 Repository secret；
 - `uninstall` 会删计划任务和 VBS、结束守护进程；`config.json` / 日志 / `.token_cache` 保留，需手动删。
 
-## 4. 报告漏洞
+## 5. 第二轮自审记录（v1.2.4）
+
+用户要求「不能藏漏洞，不能藏后门」，所以把审计过程和结果都摊开写。**没能证实的地方也照实写。**
+
+### 审了什么
+
+| 范围 | 方法 | 结果 |
+| --- | --- | --- |
+| 网络出口 | 全仓库搜 `urllib` / `http` / socket / 域名 | 只有 `https://webapi.leigod.com/api/user/pause` 一处（`PAUSE_URL`），无其它回连、无遥测 |
+| 动态执行 | 搜 `eval` / `exec` / `os.system` / `shell=True` / `EncodedCommand` / `-c` 拼接 | 0 处；日志内容只走正则/JSON 解析，从不拼命令 |
+| 子进程 | 逐个看 `subprocess` 调用点 | 全部 argv 列表形式，`icacls` / `reg query` / `tasklist` / `schtasks` / `taskkill` 参数里没有日志内容 |
+| 打包产物 | 自写 `scan_exe.py` 扫本地产物**与 Release 产物** | 字符串里只有 `webapi.leigod.com`、PyInstaller manifest 的 `schemas.microsoft.com`；无 `eval(`/`exec(`/`VirtualAlloc`/`WriteProcessMemory`；`LoadLibrary` 1 次（ctypes）、`base64` 2 次（stdlib 内部） |
+| 打包内容 | `PyInstaller archive_viewer -l` | 只有 `leigod_autopause` + stdlib 模块与 `api-ms-win-*`/`_ssl.pyd`，无第三方库 |
+| git 历史 | 扫所有历史 blob：`github_pat_`、`PRIVATE KEY`、`account_token=`、大文件 | 只命中 selftest 里的假串 `account_token=abcDEF123456_xyz`；无真实凭证、无 1MB+ 大文件 |
+| `.git/config` | 直接读 | 只有 `url`、`http.proxy=http://127.0.0.1:7897`、`user.name/email`，**没有**写入任何 token |
+| 本机自启 | `schtasks /Query`、启动文件夹、HKCU/HKLM Run | 没有计划任务（普通用户建不了）；只有启动文件夹的 `LeigodAutoPause.vbs`（243 B，只运行写死的 exe 路径）；Run 键里没有本工具 |
+| 运行进程 | `Win32_Process` + `Get-NetTCPConnection` | 只有 `LeigodAutoPause.exe watch`；空闲时无 TCP 连接（只在触发暂停时发一次 HTTPS） |
+
+### 这一轮修掉的问题
+
+1. `test_game_exit.py` 原来 `taskkill /F /IM pythonw.exe`（**误杀所有 Python GUI 程序**）、
+   以文本读 DPAPI 密文缓存（必然 `UnicodeDecodeError`）、把**真实 token 明文**写进 `%TEMP%` 且异常不清理。
+   → 改为独立临时目录 + DPAPI 密文 + `try/finally` 清理，`LEIGOD_AUTOPAUSE_MUTEX` 隔离单实例。
+2. `sign_exe.ps1` 的临时 `.pfx` 只在成功路径删除，中途抛异常会**把私钥留在 %TEMP%**；
+   且可再导出。→ `try/finally` 必删 + `EphemeralKeySet` + 临时文件 ACL 收紧。
+3. `call_pause` 用默认 `urlopen`，会跟随 3xx（POST 体里的 token 可能被带去别的主机）。→ 禁用重定向 + 固定主机核对 + TLS 1.2+。
+4. DPAPI 失败时静默退化明文、`icacls` 失败静默 `pass`。→ 都改为日志警告（同一进程只警告一次）。
+5. CI 里 `pip install pyinstaller pillow` 是浮动版本。→ 固定 `6.22.3` / `13.0.0`。
+
+### 用 API 没能证实的（token 缺 Administration 权限，全部 403）
+
+- 分支保护（`/branches/main/protection`）、仓库 webhooks（`/hooks`）、Deploy keys（`/keys`）、
+  Actions 默认权限（`/actions/permissions`）、Actions secrets（`/actions/secrets`）。
+  能确认的只有：公开仓库、协作者只有 `lyxcll` 一人、environments 为 0。
+
+请在网页 **Settings** 里自查这几项（一次性，2 分钟）：
+
+1. **Branches** → 是否给 `main` 开了保护（至少「禁止 force push / 删除」）；
+2. **Webhooks** → 应该为空（本仓库不需要任何 webhook）；
+3. **Deploy keys** → 应该为空（推送用的是临时 header，没有常驻密钥）；
+4. **Actions → General** → Workflow permissions 是否已设为 **Read repository contents**（最小权限）；
+5. **Secrets and variables → Actions** → 应该只有可选的 `CODE_SIGN_*`（不签名就不需要）。
+
+### 仍然存在、也修不掉的（说清楚）
+
+- **程序目录可被同机其他账户改写**：`E:\Edge` 这类目录默认继承 `Authenticated Users:(M)`，
+  别人能把 exe 换掉。→ 建议放到只有你能写的目录：`%LOCALAPPDATA%\LeigodAutoPause\`
+  或 `C:\Program Files\...`（程序本身不要求管理员，放哪都行）。
+- **同账户恶意程序**：能读雷神日志、能调 DPAPI、能改 exe。用户态无解。
+- **雷神客户端日志明文带 `account_token`**：这是它的设计，本工具只能不外传、不落自己的盘。
+- **没有签名、构建不可复现**：只能靠「源码 + CI 构建记录 + 自己构建」建立信任。
+- **PowerShell 5.1 的编码坑**：`scripts/sign_exe.ps1` 必须带 UTF-8 BOM，否则 5.1 按 ANSI 读会语法错误
+  （CI 用 pwsh 7 不受影响）。
+
+## 6. 报告漏洞
 
 能导致 token 泄露、命令注入（例如把日志内容当命令执行）、权限提升的问题，
 请用 **Security → Report a vulnerability**（私密 advisory），不要开公开 issue。

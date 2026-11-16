@@ -35,10 +35,12 @@ import hashlib
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 
@@ -78,12 +80,13 @@ def _pick_base_dir() -> tuple[str, bool]:
 
 
 BASE_DIR, BASE_DIR_FALLBACK = _pick_base_dir()
-VERSION = "1.2.3"
+VERSION = "1.2.4"
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 LOG_PATH = os.path.join(BASE_DIR, "autopause.log")
 TOKEN_CACHE = os.path.join(BASE_DIR, ".token_cache")
 TASK_NAME = "LeigodAutoPause"
-MUTEX_NAME = r"Local\LeigodAutoPause"
+# 全局单实例互斥量；测试可用环境变量换个名字，避免和真正在跑的守护互相干扰
+MUTEX_NAME = os.environ.get("LEIGOD_AUTOPAUSE_MUTEX", r"Local\LeigodAutoPause")
 _MUTEX = None
 PAUSE_URL = "https://webapi.leigod.com/api/user/pause"
 UA = "leigod/11.3.3.2"
@@ -301,19 +304,26 @@ def redact(text: str) -> str:
     return out
 
 
-def harden_file(path: str) -> None:
+_ACL_WARNED = False
+
+
+def harden_file(path: str) -> bool:
     """收紧文件 ACL：去掉继承来的 Users / Authenticated Users，只留本人 + SYSTEM + 管理员。
 
     Windows 默认继承会把「Authenticated Users」写成可改、Users 可读，
     放在 D:\\Tools、E:\\Edge 这类目录时，同一台机器的其他账户能直接读走 token。
+    返回 True 表示已收紧（或无需处理）；失败只记一次警告，不静默。
     """
-    if os.name != "nt":
-        return
+    global _ACL_WARNED
+    if os.name != "nt" or not path:
+        return True
     user = os.environ.get("USERNAME")
-    if not user or not os.path.exists(path):
-        return
+    if not user:
+        return False
+    if not os.path.exists(path):
+        return False
     try:
-        subprocess.run(
+        res = subprocess.run(
             ["icacls", path, "/inheritance:r",
              "/grant:r", f"{user}:F",
              "/grant:r", "*S-1-5-18:F",      # SYSTEM
@@ -321,8 +331,18 @@ def harden_file(path: str) -> None:
             capture_output=True, timeout=15,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-    except Exception:
-        pass
+        if res.returncode == 0:
+            return True
+        if not _ACL_WARNED:
+            _ACL_WARNED = True
+            log(f"⚠️ 收紧 ACL 失败（icacls 退出码 {res.returncode}）：{path}"
+                f" —— 同机其他账户可能读到这个文件")
+        return False
+    except Exception as e:  # noqa: BLE001
+        if not _ACL_WARNED:
+            _ACL_WARNED = True
+            log(f"⚠️ 收紧 ACL 失败：{path}（{e.__class__.__name__}）")
+        return False
 
 
 class _DATA_BLOB(ctypes.Structure):
@@ -359,19 +379,33 @@ def _dpapi(protect: bool, data: bytes, entropy: bytes = b"leigod-autopause") -> 
         return None
 
 
+_TOKEN_WARNED = False
+
+
 def save_token(token: str) -> None:
-    """缓存 token：优先 DPAPI 加密，再把文件 ACL 收紧到只剩本人。"""
+    """缓存 token：优先 DPAPI 加密，再把文件 ACL 收紧到只剩本人。
+
+    DPAPI 失败时退化写明文（否则断网/受限环境下无法暂停），但必须留下警告，
+    不能让人以为磁盘上只有密文。
+    """
+    global _TOKEN_WARNED
     try:
         blob = _dpapi(True, token.encode("utf-8"))
+        if blob is None:
+            if not _TOKEN_WARNED:
+                _TOKEN_WARNED = True
+                log("⚠️ DPAPI 加密不可用，token 缓存以**明文**保存；已尽量收紧文件 ACL，"
+                    "但同账户的程序仍可读取")
         data = (_TOKEN_CACHE_MAGIC + blob) if blob else token.encode("utf-8")
         with open(TOKEN_CACHE, "wb") as f:
             f.write(data)
         harden_file(TOKEN_CACHE)
-    except OSError:
-        pass
+    except OSError as e:
+        log(f"⚠️ 写 token 缓存失败：{e}")
 
 
 def load_cached_token() -> str | None:
+    global _TOKEN_WARNED
     try:
         with open(TOKEN_CACHE, "rb") as f:
             raw = f.read()
@@ -379,7 +413,13 @@ def load_cached_token() -> str | None:
         return None
     if raw.startswith(_TOKEN_CACHE_MAGIC):
         plain = _dpapi(False, raw[len(_TOKEN_CACHE_MAGIC):])
-        return plain.decode("utf-8") if plain else None
+        if plain is None:
+            if not _TOKEN_WARNED:
+                _TOKEN_WARNED = True
+                log("⚠️ 无法解密 token 缓存（换过 Windows 账户/机器，或文件被改过），"
+                    "将改从雷神日志重新读取")
+            return None
+        return plain.decode("utf-8", "replace")
     try:  # 旧版明文缓存：读出来后会重新加密
         return raw.decode("utf-8").strip() or None
     except UnicodeDecodeError:
@@ -642,19 +682,44 @@ def client_running() -> bool:
 # --------------------------------------------------------------------------- #
 # 暂停接口
 # --------------------------------------------------------------------------- #
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """拒绝一切 3xx：token 在 POST 体里，跟随重定向可能把它带去别的主机。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
+
+
 def call_pause(token: str) -> dict:
     body = json.dumps({"account_token": token, "lang": "zh_CN"}).encode()
     req = urllib.request.Request(
         PAUSE_URL, data=body, method="POST",
         headers={"Content-Type": "application/json", "User-Agent": UA},
     )
+    # 不跟随重定向 + 强制 TLS 1.2 以上，并用系统默认 CA 校验证书
+    ctx = ssl.create_default_context()
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    except (AttributeError, ValueError):
+        pass
+    opener = urllib.request.build_opener(
+        _NoRedirect(), urllib.request.HTTPSHandler(context=ctx)
+    )
+    try:
+        with opener.open(req, timeout=20) as resp:
+            final = resp.geturl()
             raw = resp.read()
     except urllib.error.HTTPError as e:
+        if 300 <= e.code < 400:
+            return {"code": -3,
+                    "msg": f"接口返回重定向 {e.code}，已拒绝跟随（防止 token 被带去其它主机）"}
         raw = e.read()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"code": -1, "msg": f"网络错误: {e}"}
+    # 再确认一次：请求确实落在预期的主机上（http 层重定向之外的双保险）
+    got = urllib.parse.urlsplit(final)
+    want = urllib.parse.urlsplit(PAUSE_URL)
+    if (got.scheme, got.netloc, got.path) != (want.scheme, want.netloc, want.path):
+        return {"code": -3, "msg": f"响应来自非预期地址 {got.netloc}，已丢弃"}
     for enc in ("utf-8", "gbk"):
         try:
             return json.loads(raw.decode(enc))
@@ -1233,6 +1298,11 @@ def cmd_selftest(cfg: dict) -> int:
         blob = _dpapi(True, b"selftest-token")
         check("DPAPI 加密往返", _dpapi(False, blob) if blob else None, b"selftest-token")
         check("文件 ACL 加固可用", callable(harden_file), True)
+        check("ACL 加固返回布尔", isinstance(harden_file(os.path.join(tmp, "nope.txt")), bool), True)
+        # 接口只允许固定主机，且拒绝重定向（token 在 POST 体里，不能被带去别处）
+        check("接口主机固定", urllib.parse.urlsplit(PAUSE_URL).netloc, "webapi.leigod.com")
+        check("拒绝重定向",
+              _NoRedirect().redirect_request(None, None, 302, "", {}, ""), None)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

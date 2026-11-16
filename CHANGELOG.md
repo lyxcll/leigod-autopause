@@ -2,6 +2,45 @@
 
 版本号规则：`主.次.修订`。配置文件向后兼容，旧配置启动时自动补齐新字段。
 
+## v1.2.4 — 第二轮自审：不藏后门，也不藏「修不了」的部分
+
+**网络（唯一出口）**
+
+- `call_pause` 拒绝一切 3xx：token 在 POST 体里，跟随重定向可能把它带去别的主机；
+  收到重定向直接返回错误，不发出第二次请求。
+- 强制 TLS 1.2+、用系统默认 CA 校验证书；响应落地后再核对一次
+  `scheme + netloc + path` 必须等于 `https://webapi.leigod.com/api/user/pause`。
+
+**签名脚本（`scripts/sign_exe.ps1`）**
+
+- 临时 `.pfx` 放进 `try/finally`：密码错、签名失败、校验失败都会删掉，不再残留私钥。
+- 私钥改用 `EphemeralKeySet` 加载：不写进用户证书库、不能被再次导出。
+- 临时证书文件 ACL 收紧到只留当前用户；默认时间戳改 https，
+  若 PowerShell 不接受该 URL（`Set-AuthenticodeSignature` 只认 `http://` 形式）自动退回不带时间戳并提示。
+
+**测试脚本（`test_game_exit.py`）**
+
+- 不再 `taskkill /F /IM pythonw.exe`（会误杀无关的 Python GUI 程序）。
+- 测试全部在独立临时目录跑：复制一份脚本 + 自己的 `config.json` / 日志，**不碰真实安装**。
+- token 只以 DPAPI 密文进入临时目录，日志里不再写明文 token；结束 `finally` 清理临时目录与进程。
+- 支持 `LEIGOD_AUTOPAUSE_MUTEX` 环境变量换互斥量名字，避免和真守护抢单实例。
+
+**不再静默失败**
+
+- DPAPI 不可用 → 日志明确警告「token 缓存以明文保存」，不再假装加密了。
+- `icacls` 收紧 ACL 失败 → 警告一次（不再 `except: pass`）。
+- token 缓存解不开（换了 Windows 账户/机器）→ 警告一次，改从雷神日志重新读取。
+
+**供应链与自检**
+
+- CI 固定 `pyinstaller==6.22.3`、`pillow==13.0.0`（原本是浮动 `pip install`）。
+- 自检新增：接口主机固定、重定向处理器返回 `None`、`harden_file` 返回布尔。
+
+**审计记录**：单网络出口、无 `eval/exec/os.system/shell=True`、subprocess 全为 argv 形式、
+exe 字符串扫描只有 `webapi.leigod.com` 与 PyInstaller manifest 的 `schemas.microsoft.com`、
+git 全历史无真实凭证 —— 明细见 [SECURITY.md](SECURITY.md) 第 5 节。
+
+
 ## v1.2.3 — 安全加固：别把凭证摊在桌面上
 
 **token 存储**
