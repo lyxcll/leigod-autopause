@@ -47,3 +47,14 @@ jobs:
         with:
           files: dist/LeigodAutoPause.exe
           fail_on_unmatched_files: true
+          name: "${{ github.ref_name }} — 雷神加速器挂机自动暂停（单文件 exe）"
+          body: |
+            ## 下载即用（免 Python）
+
+            **LeigodAutoPause.exe**（单文件）—— 放到任意有写权限的目录，双击，按 `1`。
+
+            > 首次运行若提示「已保护你的电脑」：点 **更多信息 → 仍要运行**。个人项目无代码签名，代码全部开源在本仓库。
+
+            从旧版升级：新 exe 直接覆盖旧的即可，`config.json` 会自动补齐新字段；已装自启的，双击新版按 `1` 重装一次。
+
+            各版本改动见 [CHANGELOG.md](https://github.com/lyxcll/leigod-autopause/blob/main/CHANGELOG.md)。
