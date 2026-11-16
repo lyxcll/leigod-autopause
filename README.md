@@ -68,7 +68,7 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
 
 ### 最省事：下载 exe，双击就用（免 Python）
 
-[`LeigodAutoPause.exe`](https://github.com/lyxcll/leigod-autopause/releases/latest/download/LeigodAutoPause.exe) ← 点这里下载（8.7 MB，单文件，**不用装 Python**）
+[`LeigodAutoPause.exe`](https://github.com/lyxcll/leigod-autopause/releases/latest/download/LeigodAutoPause.exe) ← 点这里下载（8.1 MB，单文件，**不用装 Python**）
 
 1. 放进一个**只有自己能写**的目录，推荐 `%LOCALAPPDATA%\leigod-autopause\`
    （`config.json`、`autopause.log` 都生成在这个目录里；目录不可写时程序会自动改用这个位置）。
@@ -77,7 +77,7 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
 
    ```
    ==========================================================
-     雷神加速器 · 挂机自动暂停   v1.2.4
+     雷神加速器 · 挂机自动暂停   v1.3.0
      目录 D:\Tools\leigod-autopause
      状态 加速中 · 守护中 · D:\LeiGod_Acc
    ==========================================================
@@ -90,7 +90,7 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
      7) 打开程序目录
      0) 退出
 
-   请选择 [1-7,0]（直接回车 = 刷新状态）:
+   请选择 [1-8,0]（直接回车 = 刷新状态）:
    ```
 
 3. 按 `1` 回车。它会注册开机自启、立刻在后台跑起来，然后告诉你去看 `autopause.log`。
@@ -155,6 +155,9 @@ python leigod_autopause.py selftest
 
 # 7. 看自己这个文件有没有被改动过（exe 版才有固定产物；脚本版会提示）
 LeigodAutoPause.exe checksum
+
+# 8. 一键体检：自启、守护、日志、游戏识别、token、联网逐项查（有问题会指出来）
+python leigod_autopause.py doctor
 ```
 
 `status` 输出长这样：
@@ -248,6 +251,43 @@ Loop
 
 ---
 
+## 一键体检：`doctor`
+
+不想到处翻日志、敲命令？跑这一条，它把「现在能不能正常工作」的前提逐项查一遍：
+
+```powershell
+LeigodAutoPause.exe doctor      # 或 python leigod_autopause.py doctor（菜单里是 8）
+```
+
+每一项会给出 ✅ / ⚠️ / ❌，最后一行是结论：
+
+```
+雷神挂机自动暂停 · 体检 v1.3.0
+程序目录 C:\Users\me\AppData\Local\leigod-autopause
+  ✅ 程序目录可写  C:\Users\me\AppData\Local\leigod-autopause
+  ✅ 雷神安装目录  D:\LeiGod_Acc
+  ✅ 客户端进程在跑  leigod.exe
+  ✅ 客户端日志在更新  main-2026-11-16.log（3 分钟前）
+  ✅ 当前未加速  log status=normal
+  ✅ 已识别该游戏的进程  RainbowSix.exe, RainbowSix_Vulkan.exe
+  ✅ 拿到 account_token  2a3G*** (len=27)
+  ✅ token 缓存已用 DPAPI 加密  只有当前 Windows 账户能解开
+  ✅ 能连上暂停接口  webapi.leigod.com:443（61 ms）
+  ✅ 开机自启  启动文件夹 LeigodAutoPause.vbs 指向本程序
+  ✅ 守护进程在跑  日志 ...\autopause.log
+  ✅ 日志有近期活动  0 分钟前
+
+  当前策略：
+    空闲 15 分钟暂停 · 最短加速 3 分钟 · 每 30 秒检查
+    关游戏即暂停 开（宽限 90 秒） · 游戏没在跑 300 秒后暂停 · 心跳 30 分钟
+
+结论：12 项正常 · 0 项注意 · 0 项异常 —— 一切正常
+```
+
+它只做**只读**检查：网络项只建一次 TCP 连接，不发 token、不调暂停接口。
+
+---
+
 ## 故障排查：怎么确认它活着
 
 ```powershell
@@ -268,7 +308,7 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 日志里正常长这样：
 
 ```
-[22:19:19] 👀 开始守护 v1.2.0（pid 27900）：D:\LeiGod_Acc，每 30s 检查一次（空闲阈值 15 分钟，游戏退出即暂停）
+[22:19:19] 👀 开始守护 v1.3.0（pid 40464）：D:\LeiGod_Acc，每 30s 检查一次（空闲阈值 15 分钟，游戏退出即暂停）
 [22:19:20] 📊 当前：加速中（彩虹六号:围攻 X），游戏进程 无（自动识别）
 [22:19:22] ✅ 已暂停（加速中但游戏没在跑，无需再加速（彩虹六号:围攻 X））msg=成功
 ```
@@ -314,7 +354,7 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 同时 VBS 守护循环会在 5 秒后重新拉起，所以「崩一次」通常只丢一次检查。
 
 **怎么看版本？是不是新版？**
-`LeigodAutoPause.exe --version`，或者双击看菜单表头（`v1.2.4`）。`--help` 列出全部命令。
+`LeigodAutoPause.exe --version`，或者双击看菜单表头（`v1.3.0`）。`--help` 列出全部命令。
 
 **之前挂机几个小时都没停？**
 先看日志里有没有 `💓 心跳`。没有 = 进程当时不在（被杀 / 没开机自启），工具再聪明也没用；

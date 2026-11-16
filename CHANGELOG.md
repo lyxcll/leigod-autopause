@@ -2,6 +2,51 @@
 
 版本号规则：`主.次.修订`。配置文件向后兼容，旧配置启动时自动补齐新字段。
 
+## v1.3.0 — 更快、更小、自带体检
+
+数字都是同一台机器、同一个 exe 包型（onefile）实测，v1.2.4 为基线：
+
+| 项目 | v1.2.4 | v1.3.0 | 变化 |
+|---|---|---|---|
+| 体积 | 8,697,898 B | 8,526,016 B | **-2.0%** |
+| `--version` 冷启动（7 次中位数） | 773 ms | **701 ms** | **-9%** |
+| `status`（5 次中位数） | 1,895 ms | **944 ms** | **-50%** |
+
+**新增 `doctor` 一键体检**
+
+- `LeigodAutoPause.exe doctor`（菜单里是 `8`，别名 `check` / `diag`）逐项检查：
+  程序目录可写、雷神安装目录、客户端进程、日志新鲜度、加速状态、游戏进程识别、
+  token 是否可读且已加密、接口连通性（只建 TCP，不发 token）、开机自启指向、
+  守护进程、日志近期活动。
+- 每项 ✅ / ⚠️ / ❌，最后一行 `结论：N 项正常 · M 项注意 · K 项异常`，
+  有异常时退出码为 1（方便脚本判断）。
+
+**启动更快**
+
+- `ssl` / `urllib` / `hashlib` 改成函数内延迟导入：`status`、菜单、`selftest`
+  这些常用路径不再加载 TLS 栈（实测省 60-70 ms）。
+- 进程枚举从 `tasklist` 子进程改为 **Toolhelp32 快照**（`CreateToolhelp32Snapshot`，
+  本机 12 ms → 原 `tasklist` 250-670 ms），失败才退回 `tasklist`。
+- `find_install_dirs()` 结果进程内缓存 60 秒（`reg query` 一次 200 ms+）；
+  进程列表缓存 2 秒，`client_running()` 与 `process_running()` 不再各起一个子进程。
+
+**体积**
+
+- PyInstaller 排除表补上确实没用的 stdlib：`argparse` / `difflib` / `pprint` /
+  `uuid` / `ftplib` / `imaplib` / `poplib` / `smtplib` / `telnetlib` / `nntplib` /
+  `webbrowser` / `mimetypes` / `logging` / `gettext` / `pickle` / `xml` /
+  `tarfile`；`zstd` / `lzma` / `bz2` / `decimal`。
+- **两个不能动的坑（各踩了一次）**：
+  - `unicodedata` 不能排除 —— `encodings.idna` 依赖它，去掉后所有 HTTPS 报
+    `LookupError: unknown encoding: idna`；`selftest` 已加断言提前拦截。
+  - `zipfile` 不能排除 —— PyInstaller 的 `pyi_rth_inspect` 启动时要 import 它，
+    去掉后 exe 直接 `ModuleNotFoundError: No module named 'zipfile'`。
+
+**自检**
+
+- 新增「IDNA 编解码可用（HTTPS 前置）」「拒绝重定向」「接口主机固定」
+  「ACL 加固返回布尔」等断言。
+
 ## v1.2.4 — 第二轮自审：不藏后门，也不藏「修不了」的部分
 
 **网络（唯一出口）**

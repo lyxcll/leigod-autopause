@@ -25,7 +25,7 @@ for _stream in (sys.stdout, sys.stderr):
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(ROOT, "assets")
 APP_NAME = "LeigodAutoPause"
-VERSION = (1, 2, 4, 0)
+VERSION = (1, 3, 0, 0)
 
 
 def make_icon(path: str) -> str | None:
@@ -138,6 +138,33 @@ def main() -> int:
         "--exclude-module=multiprocessing",
         "--exclude-module=doctest",
         "--exclude-module=pdb",
+        # 这几个用不到：去掉后包体小约 250 KB，启动时也少解压一点。
+        # 注意 unicodedata 不能去——encodings.idna 依赖它，去掉后 HTTPS 直接
+        # 报 LookupError: unknown encoding: idna（v1.3.0 实测过，selftest 已加拦截）
+        "--exclude-module=zstd",
+        "--exclude-module=lzma",
+        "--exclude-module=bz2",
+        "--exclude-module=decimal",
+        # 纯 stdlib、本工具一行都没用到（见 README 的体积说明）
+        "--exclude-module=argparse",
+        "--exclude-module=difflib",
+        "--exclude-module=pprint",
+        "--exclude-module=uuid",
+        "--exclude-module=ftplib",
+        "--exclude-module=imaplib",
+        "--exclude-module=poplib",
+        "--exclude-module=smtplib",
+        "--exclude-module=telnetlib",
+        "--exclude-module=nntplib",
+        "--exclude-module=webbrowser",
+        "--exclude-module=mimetypes",
+        "--exclude-module=logging",
+        "--exclude-module=gettext",
+        "--exclude-module=pickle",
+        "--exclude-module=xml",
+        "--exclude-module=tarfile",
+        # zipfile 不能去：PyInstaller 自己的 pyi_rth_inspect 会 import 它，
+        # 去掉后一启动就 ModuleNotFoundError: No module named 'zipfile'
         "leigod_autopause.py",
     ]
     if icon:

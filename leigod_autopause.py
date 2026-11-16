@@ -31,17 +31,12 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import glob
-import hashlib
 import json
 import os
 import re
-import ssl
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from datetime import datetime
 
 def _app_dir() -> str:
@@ -80,14 +75,20 @@ def _pick_base_dir() -> tuple[str, bool]:
 
 
 BASE_DIR, BASE_DIR_FALLBACK = _pick_base_dir()
-VERSION = "1.2.4"
+VERSION = "1.3.0"
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 LOG_PATH = os.path.join(BASE_DIR, "autopause.log")
 TOKEN_CACHE = os.path.join(BASE_DIR, ".token_cache")
 TASK_NAME = "LeigodAutoPause"
+STARTUP_DIR = os.path.join(
+    os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
+STARTUP_LINK = os.path.join(STARTUP_DIR, "LeigodAutoPause.vbs")
 # 全局单实例互斥量；测试可用环境变量换个名字，避免和真正在跑的守护互相干扰
 MUTEX_NAME = os.environ.get("LEIGOD_AUTOPAUSE_MUTEX", r"Local\LeigodAutoPause")
 _MUTEX = None
+# 进程内小缓存：tasklist / reg query 每次要 200-900 ms，没必要反复问系统
+_INSTALL_CACHE = None      # (extra_dirs, monotonic, dirs)
+_PROC_CACHE = None         # (monotonic, {进程名})
 PAUSE_URL = "https://webapi.leigod.com/api/user/pause"
 UA = "leigod/11.3.3.2"
 TOKEN_RE = re.compile(r"account_token=([A-Za-z0-9_\-]{10,})")
@@ -170,6 +171,8 @@ def self_sha256() -> str | None:
     if not getattr(sys, "frozen", False):
         return None
     try:
+        import hashlib  # 延迟导入：status / 菜单这类常见路径不需要它
+
         h = hashlib.sha256()
         with open(sys.executable, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -430,6 +433,13 @@ def load_cached_token() -> str | None:
 # 定位雷神安装目录
 # --------------------------------------------------------------------------- #
 def find_install_dirs(cfg: dict) -> list[str]:
+    """找雷神安装目录。结果在进程内缓存 60 秒（reg query 一次要 200 ms+）。"""
+    global _INSTALL_CACHE
+    extra_key = tuple(cfg.get("extra_install_dirs") or ())
+    now = time.monotonic()
+    if _INSTALL_CACHE and _INSTALL_CACHE[0] == extra_key and now - _INSTALL_CACHE[1] < 60.0:
+        return list(_INSTALL_CACHE[2])
+
     dirs: list[str] = []
 
     def add(p: str | None) -> None:
@@ -466,7 +476,9 @@ def find_install_dirs(cfg: dict) -> list[str]:
         add(guess)
 
     # 只要带 llogs 目录的
-    return [d for d in dirs if os.path.isdir(os.path.join(d, "resources", "llogs"))]
+    found = [d for d in dirs if os.path.isdir(os.path.join(d, "resources", "llogs"))]
+    _INSTALL_CACHE = (extra_key, now, found)
+    return list(found)
 
 
 # --------------------------------------------------------------------------- #
@@ -643,11 +655,61 @@ def idle_seconds() -> float:
     return delta / 1000.0
 
 
-def process_running(names: list[str]) -> list[str]:
-    """返回这些进程名里正在运行的（大小写不敏感，可省略 .exe）。"""
-    if not names:
-        return []
-    wanted = {n.lower().removesuffix(".exe") for n in names}
+def _process_names_api() -> set[str] | None:
+    """用 Toolhelp 快照直接枚举进程名（本机 0-2 ms；tasklist 要 250-670 ms）。
+
+    失败（非 Windows、权限、结构体变动）返回 None，让调用方退回 tasklist。
+    """
+    TH32CS_SNAPPROCESS = 0x00000002
+    INVALID_HANDLE = ctypes.c_void_p(-1).value
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wt.DWORD),
+            ("cntUsage", wt.DWORD),
+            ("th32ProcessID", wt.DWORD),
+            ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+            ("th32ModuleID", wt.DWORD),
+            ("cntThreads", wt.DWORD),
+            ("th32ParentProcessID", wt.DWORD),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wt.DWORD),
+            ("szExeFile", wt.WCHAR * 260),
+        ]
+
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+        k32.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
+        k32.Process32FirstW.argtypes = [ctypes.c_void_p, ctypes.POINTER(PROCESSENTRY32W)]
+        k32.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(PROCESSENTRY32W)]
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+
+        snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if not snap or snap == INVALID_HANDLE:
+            return None
+        try:
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(entry)
+            names: set[str] = set()
+            ok = k32.Process32FirstW(snap, ctypes.byref(entry))
+            while ok:
+                name = (entry.szExeFile or "").lower()
+                if name.endswith(".exe"):
+                    name = name[:-4]
+                if name:
+                    names.add(name)
+                ok = k32.Process32NextW(snap, ctypes.byref(entry))
+            return names
+        finally:
+            k32.CloseHandle(snap)
+    except Exception:
+        return None
+
+
+def _process_names_tasklist() -> set[str]:
+    """兜底：走 tasklist。"""
+    names: set[str] = set()
     try:
         out = subprocess.run(
             ["tasklist", "/FO", "CSV", "/NH"],
@@ -655,41 +717,73 @@ def process_running(names: list[str]) -> list[str]:
             creationflags=subprocess.CREATE_NO_WINDOW,
         ).stdout.decode("gbk", "ignore")
     except Exception:
-        return []
-    found = []
+        return names
     for line in out.splitlines():
         parts = line.split('","')
         if not parts:
             continue
-        name = parts[0].strip('"').strip().lower().removesuffix(".exe")
-        if name in wanted:
-            found.append(name)
-    return found
+        name = parts[0].strip('"').strip().lower()
+        if name.endswith(".exe"):
+            name = name[:-4]
+        if name:
+            names.add(name)
+    return names
+
+
+def _process_names(ttl: float = 2.0) -> set[str]:
+    """当前所有进程名（小写、无 .exe）；2 秒内重复调用直接复用。
+
+    优先 Toolhelp 快照（微秒级），拿不到才退回 tasklist。
+    """
+    global _PROC_CACHE
+    now = time.monotonic()
+    if _PROC_CACHE and now - _PROC_CACHE[0] < ttl:
+        return _PROC_CACHE[1]
+    names = _process_names_api()
+    if names is None:
+        names = _process_names_tasklist()
+    _PROC_CACHE = (now, names)
+    return names
+
+
+def process_running(names: list[str]) -> list[str]:
+    """返回这些进程名里正在运行的（大小写不敏感，可省略 .exe）。"""
+    if not names:
+        return []
+    alive = _process_names()
+    return [n for n in names if n.lower().removesuffix(".exe") in alive]
 
 
 def client_running() -> bool:
-    try:
-        out = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq leigod.exe", "/FO", "CSV", "/NH"],
-            capture_output=True, timeout=15,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        ).stdout.decode("gbk", "ignore")
-        return "leigod.exe" in out.lower()
-    except Exception:
-        return False
+    return "leigod" in _process_names()
 
 
 # --------------------------------------------------------------------------- #
 # 暂停接口
 # --------------------------------------------------------------------------- #
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """拒绝一切 3xx：token 在 POST 体里，跟随重定向可能把它带去别的主机。"""
+def _no_redirect_handler_class():
+    """延迟导入 urllib，返回「拒绝一切 3xx」的 handler 类。
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
-        return None
+    放在函数里是有意为之：status / 菜单 / selftest 这些常用路径不必加载
+    ssl + urllib（本机实测约省 60-70 ms 启动时间）。
+    """
+    import urllib.request
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        """拒绝一切 3xx：token 在 POST 体里，跟随重定向可能把它带去别的主机。"""
+
+        def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+            return None
+
+    return _NoRedirect
 
 
 def call_pause(token: str) -> dict:
+    import ssl
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
     body = json.dumps({"account_token": token, "lang": "zh_CN"}).encode()
     req = urllib.request.Request(
         PAUSE_URL, data=body, method="POST",
@@ -702,7 +796,7 @@ def call_pause(token: str) -> dict:
     except (AttributeError, ValueError):
         pass
     opener = urllib.request.build_opener(
-        _NoRedirect(), urllib.request.HTTPSHandler(context=ctx)
+        _no_redirect_handler_class()(), urllib.request.HTTPSHandler(context=ctx)
     )
     try:
         with opener.open(req, timeout=20) as resp:
@@ -1008,9 +1102,8 @@ def _watch_cmd() -> str:
 
 def cmd_install(cfg: dict) -> int:
     cmd = _watch_cmd()
-    startup = os.path.join(os.environ["APPDATA"],
-                           r"Microsoft\Windows\Start Menu\Programs\Startup")
-    link = os.path.join(startup, "LeigodAutoPause.vbs")
+    startup = STARTUP_DIR
+    link = STARTUP_LINK
 
     # 旧实例（比如之前用 Python 版装的）先停掉，否则新实例会被互斥量挡住
     if watcher_alive():
@@ -1113,8 +1206,7 @@ def cmd_uninstall(cfg: dict) -> int:
         log(f"✅ 已删除计划任务 {TASK_NAME}")
     else:
         log("ℹ️ 计划任务不存在或删除失败（可能本来就没装）")
-    link = os.path.join(os.environ["APPDATA"],
-                        r"Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPause.vbs")
+    link = STARTUP_LINK
     if os.path.exists(link):
         try:
             os.remove(link)
@@ -1183,6 +1275,7 @@ def cmd_menu(cfg: dict) -> int:
         "2": ("刷新当前状态（只读，不会暂停）", cmd_status),
         "3": ("立即暂停一次（测试接口）", cmd_pause),
         "4": ("停止守护并取消开机自启", cmd_uninstall),
+        "8": ("体检（自启 / 守护 / 日志 / 网络 / token）", cmd_doctor),
     }
     while True:
         _print_menu_header(cfg)
@@ -1193,10 +1286,11 @@ def cmd_menu(cfg: dict) -> int:
         print("  5) 看日志（最近 20 行）")
         print("  6) 打开配置文件 config.json")
         print("  7) 打开程序目录")
+        print("  8) 体检（自启 / 守护 / 日志 / 网络 / token）")
         print("  0) 退出")
         print()
         try:
-            choice = (input(c("请选择 [1-7,0]（直接回车 = 刷新状态）: ", "cyan")) or "2").strip()
+            choice = (input(c("请选择 [1-8,0]（直接回车 = 刷新状态）: ", "cyan")) or "2").strip()
         except (EOFError, KeyboardInterrupt):
             return 0
         if choice == "0":
@@ -1227,6 +1321,149 @@ def cmd_menu(cfg: dict) -> int:
         if not item:
             continue
         _menu_exec(item[0], item[1], cfg)
+
+
+def cmd_doctor(cfg: dict) -> int:
+    """一键体检：把「现在能不能正常工作」的每个前提都查一遍，说人话。"""
+    import socket
+
+    ok = warn = bad = 0
+
+    def row(level: str, title: str, detail: str = "") -> None:
+        nonlocal ok, warn, bad
+        icon, color = {"ok": ("✅", "green"),
+                       "warn": ("⚠️ ", "yellow"),
+                       "bad": ("❌", "red")}[level]
+        if level == "ok":
+            ok += 1
+        elif level == "warn":
+            warn += 1
+        else:
+            bad += 1
+        tail = f"  {c(detail, 'dim')}" if detail else ""
+        print(f"  {c(icon, color)} {title}{tail}")
+
+    print(c(f"\n雷神挂机自动暂停 · 体检 v{VERSION}", "bold"))
+    print(c(f"程序目录 {BASE_DIR}", "dim"))
+
+    # 1) 程序目录
+    if _is_writable(BASE_DIR):
+        row("ok", "程序目录可写", BASE_DIR)
+    else:
+        row("bad", "程序目录不可写", f"{BASE_DIR}（配置/日志写不进去）")
+
+    # 2) 安装目录 / 客户端
+    install_dirs = find_install_dirs(cfg)
+    if not install_dirs:
+        row("bad", "没找到雷神安装目录", "装了雷神吗？或者把路径填进 config.json 的 extra_install_dirs")
+    else:
+        row("ok", "雷神安装目录", install_dirs[0])
+        if client_running():
+            row("ok", "客户端进程在跑", "leigod.exe")
+        else:
+            row("warn", "客户端没在跑", "不开加速器时守护什么都不做，属正常")
+
+    install_dir = install_dirs[0] if install_dirs else ""
+
+    # 3) 日志新鲜度 / 加速状态
+    if install_dir:
+        logs = newest_files(os.path.join(install_dir, "resources", "llogs", "main-*.log"), 1)
+        if logs:
+            age = time.time() - os.path.getmtime(logs[0])
+            if age < 1800:
+                row("ok", "客户端日志在更新", f"{os.path.basename(logs[0])}（{int(age / 60)} 分钟前）")
+            else:
+                row("warn", "客户端日志很久没更新", f"{os.path.basename(logs[0])}（{int(age / 3600)} 小时前）")
+        else:
+            row("warn", "找不到 main-*.log", "客户端可能还没启动过")
+
+        st = read_accel_state(install_dir)
+        if st["accelerating"]:
+            row("ok", "当前在加速", f"{st['game'] or '未知游戏'}")
+        else:
+            row("ok", "当前未加速", f"log status={st['status']}")
+
+        procs = read_game_process_map(install_dir).get(str(st.get("game_id") or ""), ())
+        if procs:
+            row("ok", "已识别该游戏的进程", ", ".join(procs[:4]))
+        elif st["accelerating"]:
+            row("warn", "没识别到游戏的进程名",
+                "关游戏不会自动暂停；先正常启动一次游戏，或在 config.json 手填 game_exe_names")
+        else:
+            row("ok", "暂不需要进程名", "没在加速")
+
+    # 4) token
+    token = read_token(install_dir) if install_dir else None
+    if token:
+        row("ok", "拿到 account_token", mask(token))
+    else:
+        row("bad", "拿不到 account_token", "在雷神客户端里登录一次再来")
+    try:
+        with open(TOKEN_CACHE, "rb") as f:
+            head = f.read(7)
+        if head == b"DPAPI1\n":
+            row("ok", "token 缓存已用 DPAPI 加密", "只有当前 Windows 账户能解开")
+        else:
+            row("warn", "token 缓存是明文", "删掉 .token_cache 会重新加密保存")
+    except FileNotFoundError:
+        row("ok", "还没有 token 缓存", "下次暂停时自动生成")
+
+    # 5) 网络
+    try:
+        t0 = time.time()
+        with socket.create_connection(("webapi.leigod.com", 443), timeout=6):
+            pass
+        row("ok", "能连上暂停接口", f"webapi.leigod.com:443（{int((time.time() - t0) * 1000)} ms）")
+    except Exception as e:
+        row("warn", "连不上暂停接口", f"{type(e).__name__}: {e}（断网/代理/防火墙）")
+
+    # 6) 自启
+    task = subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME], capture_output=True)
+    if task.returncode == 0:
+        row("ok", "计划任务已登记", TASK_NAME)
+    elif os.path.exists(STARTUP_LINK):
+        try:
+            with open(STARTUP_LINK, "r", encoding="gbk", errors="replace") as f:
+                vbs = f.read()
+        except OSError:
+            vbs = ""
+        wanted = f'"{BASE_DIR}' if getattr(sys, "frozen", False) else "leigod_autopause.py"
+        if wanted in vbs:
+            row("ok", "启动文件夹自启项正确", STARTUP_LINK)
+        else:
+            row("warn", "自启项指向别的位置", "程序目录换过？重新 install 一次就好")
+    else:
+        row("warn", "没有开机自启", "双击 exe 选 1 安装")
+
+    # 7) 守护进程 + 心跳
+    if watcher_alive():
+        row("ok", "守护进程在跑", f"日志 {LOG_PATH}")
+        try:
+            age = time.time() - os.path.getmtime(LOG_PATH)
+            limit = cfg.get("heartbeat_minutes", 30) * 60 + 180
+            if age < limit:
+                row("ok", "日志有近期活动", f"{int(age / 60)} 分钟前")
+            else:
+                row("warn", "日志很久没动静", f"{int(age / 60)} 分钟（超过心跳间隔，可能卡住了）")
+        except OSError:
+            row("warn", "读不到日志时间", LOG_PATH)
+    else:
+        row("bad", "守护进程没在跑", "双击 exe 选 1 安装 / 修复")
+
+    # 8) 配置
+    print(c("\n  当前策略：", "bold"))
+    print(f"    空闲 {cfg['idle_minutes']} 分钟暂停 · 最短加速 {cfg['min_accel_minutes']} 分钟"
+          f" · 每 {cfg['check_interval_seconds']} 秒检查")
+    print(f"    关游戏即暂停 {'开' if cfg['pause_on_game_exit'] else '关'}"
+          f"（宽限 {cfg['game_exit_grace_seconds']} 秒）"
+          f" · 游戏没在跑 {cfg['game_absent_pause_seconds']} 秒后暂停"
+          f" · 心跳 {cfg['heartbeat_minutes']} 分钟")
+
+    head = "问题不大" if bad == 0 and warn == 0 else ("能用，但有注意项" if bad == 0 else "有异常，需要处理")
+    color = "green" if bad == 0 and warn == 0 else ("yellow" if bad == 0 else "red")
+    print()
+    print(c(f"结论：{ok} 项正常 · {warn} 项注意 · {bad} 项异常 —— {head}", color))
+    return 0 if bad == 0 else 1
 
 
 def cmd_selftest(cfg: dict) -> int:
@@ -1300,9 +1537,21 @@ def cmd_selftest(cfg: dict) -> int:
         check("文件 ACL 加固可用", callable(harden_file), True)
         check("ACL 加固返回布尔", isinstance(harden_file(os.path.join(tmp, "nope.txt")), bool), True)
         # 接口只允许固定主机，且拒绝重定向（token 在 POST 体里，不能被带去别处）
-        check("接口主机固定", urllib.parse.urlsplit(PAUSE_URL).netloc, "webapi.leigod.com")
+        import urllib.parse as _up
+
+        check("接口主机固定", _up.urlsplit(PAUSE_URL).netloc, "webapi.leigod.com")
         check("拒绝重定向",
-              _NoRedirect().redirect_request(None, None, 302, "", {}, ""), None)
+              _no_redirect_handler_class()().redirect_request(None, None, 302, "", {}, ""), None)
+        # HTTPS 依赖 encodings.idna，而 idna 依赖 unicodedata —— 打包时若把它排除掉，
+        # 所有联网命令都会炸在 "unknown encoding: idna"，所以这里必须验一口
+        import codecs
+
+        try:
+            codecs.lookup("idna")
+            idna_ok = True
+        except LookupError:
+            idna_ok = False
+        check("IDNA 编解码可用（HTTPS 前置）", idna_ok, True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1327,6 +1576,7 @@ HELP_TEXT = f"""\
   LeigodAutoPause.exe install         注册开机自启并后台守护
   LeigodAutoPause.exe uninstall       取消自启并停止守护
   LeigodAutoPause.exe selftest        离线自检（不碰客户端/网络）
+  LeigodAutoPause.exe doctor          体检：自启 / 守护 / 日志 / 网络 / token 逐项检查
   LeigodAutoPause.exe checksum        打印自身 SHA256（对比 Release 的 SHA256SUMS.txt）
   LeigodAutoPause.exe --version       版本号 + 文件路径 + SHA256
   LeigodAutoPause.exe --help          这张帮助
@@ -1385,6 +1635,8 @@ def main(argv: list[str]) -> int:
         return cmd_uninstall(cfg)
     if cmd == "selftest":
         return cmd_selftest(cfg)
+    if cmd in ("doctor", "check", "diag"):
+        return cmd_doctor(cfg)
     print(HELP_TEXT)
     return 2
 
