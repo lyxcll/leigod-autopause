@@ -1,5 +1,9 @@
 # 雷神加速器 · 挂机自动暂停
 
+[![CI](https://github.com/lyxcll/leigod-autopause/actions/workflows/ci.yml/badge.svg)](https://github.com/lyxcll/leigod-autopause/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](leigod_autopause.py)
+
 挂机 / 出门没关电脑时，自动把**雷神加速器**的计时暂停掉，避免白烧时长。
 
 纯本地小工具：单文件 Python，**只用标准库**，不需要装依赖、不需要抓包、不需要手动填 token。
