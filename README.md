@@ -75,7 +75,7 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
 
    ```
    ==========================================================
-     雷神加速器 · 挂机自动暂停   v1.2.0
+     雷神加速器 · 挂机自动暂停   v1.2.1
      目录 D:\Tools\leigod-autopause
      状态 加速中 · 守护中 · D:\LeiGod_Acc
    ==========================================================
@@ -94,8 +94,10 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
 3. 按 `1` 回车。它会注册开机自启、立刻在后台跑起来，然后告诉你去看 `autopause.log`。
    之后再双击，菜单会显示「守护中」；想让它自己看日志就按 `5`，不用再开资源管理器。
 
-> Windows 第一次运行会提示「已保护你的电脑」：点 **更多信息 → 仍要运行** 即可。
-> 这个 exe 没有代码签名（个人项目），但代码全部开源，就在本仓库的 `leigod_autopause.py` 里。
+> Windows 第一次运行会提示「已保护你的电脑」：点 **更多信息 → 仍要运行** 即可 ——
+> 这个 exe **没有商业代码签名证书**（个人项目，证书一年几千块，自签名证书一样会被拦）。
+> 代码全部开源，就在本仓库的 `leigod_autopause.py` 里；下载到的文件可以按
+> [下载校验与代码签名](#下载校验与代码签名) 花 30 秒验一下。
 
 不需要 GitHub 账号，不需要填 token —— 它读**你自己电脑上**雷神客户端的日志拿登录态。
 
@@ -148,6 +150,9 @@ python leigod_autopause.py uninstall
 
 # 6. 离线自检（不碰客户端、不发请求，改完代码先跑这个）
 python leigod_autopause.py selftest
+
+# 7. 看自己这个文件有没有被改动过（exe 版才有固定产物；脚本版会提示）
+LeigodAutoPause.exe checksum
 ```
 
 `status` 输出长这样：
@@ -325,6 +330,47 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 
 ---
 
+## 下载校验与代码签名
+
+**为什么没有签名**：真签名证书（OV/EV）一年几千块，还得有公司主体；自签名证书签了也一样弹「已保护你的电脑」，
+等于白签。所以这里不买证书，改成把「可验证」做扎实：
+
+1. **exe 是 CI 现打的**：`build-exe.yml` 在打 tag 时用仓库里的 `build_exe.py` 从源码构建，不是手工传的二进制；
+2. **源码单文件**：读日志、调暂停接口的逻辑全在 `leigod_autopause.py`，可以逐行看；
+3. **每次发布带 `SHA256SUMS.txt`**：Release 里除了 exe 还有这个文件，CI 会用 exe 自报的哈希交叉核对。
+
+### 30 秒验证你下到的 exe
+
+```powershell
+# 方法一：让 exe 自己报哈希（--version 也会打印）
+.\LeigodAutoPause.exe checksum
+
+# 方法二：用系统命令算，不依赖信任这个 exe
+Get-FileHash .\LeigodAutoPause.exe -Algorithm SHA256
+```
+
+输出跟 Release 页面里 `SHA256SUMS.txt` 的那一行对上即可。
+
+> 说明：`checksum` 是「自报」的，能挡住**下载被截断 / 损坏 / 被中间人替换**，
+> 但挡不住有人恶意重打包（他可以改代码让自报值照样对得上）。防这一层靠的是
+> 「exe 由 GitHub Actions 从本仓库源码构建」这条链。要验「签发者身份」，只能上真证书。
+
+### 想让它变成「有签名」的
+
+仓库已预留签名流水线，**不用改代码**：
+
+1. 搞到代码签名证书 `.pfx`：商业 CA（DigiCert / Sectigo 等），或 [SignPath.io](https://signpath.io/) 给开源项目的免费签名；
+2. 仓库 Secrets 里加：`CODE_SIGN_PFX_BASE64`（`[Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))`）和 `CODE_SIGN_PFX_PASSWORD`；
+3. 下次打 tag，`build-exe.yml` 会先调 `scripts/sign_exe.ps1` 签名，**再**生成 `SHA256SUMS.txt`（顺序很重要：签名会改哈希）。
+
+本地自己签也行，只用 Windows 自带的 `Set-AuthenticodeSignature`，不需要 Windows SDK / signtool：
+
+```powershell
+powershell -File scripts\sign_exe.ps1 -Path dist\LeigodAutoPause.exe -PfxPath D:\cert.pfx -PfxPassword ***
+```
+
+---
+
 ## 维护 / 适配新版本
 
 更新记录见 [CHANGELOG.md](CHANGELOG.md)。
@@ -342,6 +388,9 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 CI（`.github/workflows/ci.yml`）在每次 push/PR 时跑 `selftest`：日志解析、进程名识别、token 提取、配置读取 —— 改这几块时它会兜住。
 
 exe 由 `build_exe.py`（PyInstaller）打出，`build-exe.yml` 在打 tag 时自动构建并附到 Release，你也可以本地 `python build_exe.py` 复现。
+
+发版流程：改 `VERSION`（`leigod_autopause.py` 与 `build_exe.py` 两处）→ 跑 `selftest` → `git tag vX.Y.Z && git push --tags` →
+CI 构建、可选签名、生成 `SHA256SUMS.txt`、建 Release。本地想先看效果就 `python build_exe.py` 后跑 `dist\LeigodAutoPause.exe --version` 核对哈希。
 
 **PR 请自带一个 selftest 断言**（改哪个解析器就在 `cmd_selftest` 里补一个 `check`），这是这个仓库唯一的硬性要求。
 

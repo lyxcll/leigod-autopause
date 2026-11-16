@@ -12,3 +12,5 @@ dist/
 build/
 *.spec
 .venv-build/
+SHA256SUMS.txt
+*.pfx

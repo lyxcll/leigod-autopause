@@ -2,6 +2,26 @@
 
 版本号规则：`主.次.修订`。配置文件向后兼容，旧配置启动时自动补齐新字段。
 
+## v1.2.1 — 没证书也能验，有证书就能签
+
+**可自校验**
+
+- 新增 `LeigodAutoPause.exe checksum`（别名 `sha256` / `hash`）：打印自身 SHA256；脚本模式下明确提示
+  「只有 exe 有固定产物」并返回 1，不会假装自己有个哈希。
+- `--version` 现在一起打印文件路径、SHA256 和一句校验说明。
+- Release 页多带 `SHA256SUMS.txt`；CI 会拿 exe 自报的哈希跟文件实际哈希交叉核对，对不上直接构建失败。
+
+**签名流水线（可选）**
+
+- 新增 `scripts/sign_exe.ps1`：配了 `CODE_SIGN_PFX_BASE64` / `CODE_SIGN_PFX_PASSWORD` 就自动签名，
+  没配就打印一句说明照常出未签名 exe。只用 Windows 自带的 `Set-AuthenticodeSignature`，不需要 Windows SDK / signtool。
+- 签名在生成 `SHA256SUMS.txt` **之前**执行 —— 签名会改哈希，顺序反了就会发出对不上的校验值。
+- 自签名证书实测：能签、签名后的 exe 仍能跑；但自签名不会改善 SmartScreen，README 里写清楚了这点。
+
+**文档**
+
+- README 新增「下载校验与代码签名」：为什么没签、30 秒手验、怎么接入真证书。
+
 ## v1.2.0 — exe 体验大修
 
 **不会用命令行也能用明白了**

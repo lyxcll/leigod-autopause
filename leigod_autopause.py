@@ -23,7 +23,7 @@
   python leigod_autopause.py uninstall   # 取消开机自启
   python leigod_autopause.py selftest    # 离线自检（不需要客户端/网络，CI 用）
 
-配置：同目录 config.json（首次运行自动生成，目录不可写时改用 %LOCALAPPDATA%\leigod-autopause）
+配置：同目录 config.json（首次运行自动生成，目录不可写时改用 %LOCALAPPDATA%\\leigod-autopause）
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import glob
+import hashlib
 import json
 import os
 import re
@@ -77,7 +78,7 @@ def _pick_base_dir() -> tuple[str, bool]:
 
 
 BASE_DIR, BASE_DIR_FALLBACK = _pick_base_dir()
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 LOG_PATH = os.path.join(BASE_DIR, "autopause.log")
 TOKEN_CACHE = os.path.join(BASE_DIR, ".token_cache")
@@ -155,6 +156,24 @@ def c(text: str, color: str = "") -> str:
     if not USE_COLOR or not color:
         return text
     return f"{_COLORS.get(color, '')}{text}{_COLORS['reset']}"
+
+
+def self_sha256() -> str | None:
+    """exe 自身的 SHA256；脚本模式返回 None。
+
+    没有代码签名时，这是用户唯一能自己验证「下到的东西没被换过」的手段：
+    对比 Release 里的 SHA256SUMS.txt 即可。
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    try:
+        h = hashlib.sha256()
+        with open(sys.executable, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
 
 
 def log(msg: str) -> None:
@@ -1081,7 +1100,9 @@ def cmd_selftest(cfg: dict) -> int:
         check("列表字段容错", clamped["game_exe_names"], [])
         check("布尔字段容错", clamped["pause_on_game_exit"], True)
         check("帮助文本", "selftest" in HELP_TEXT, True)
+        check("帮助含校验说明", "checksum" in HELP_TEXT, True)
         check("守护检测可用", callable(watcher_alive), True)
+        check("自身校验可用", callable(self_sha256), True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1106,10 +1127,15 @@ HELP_TEXT = f"""\
   LeigodAutoPause.exe install         注册开机自启并后台守护
   LeigodAutoPause.exe uninstall       取消自启并停止守护
   LeigodAutoPause.exe selftest        离线自检（不碰客户端/网络）
-  LeigodAutoPause.exe --version       版本号
+  LeigodAutoPause.exe checksum        打印自身 SHA256（对比 Release 的 SHA256SUMS.txt）
+  LeigodAutoPause.exe --version       版本号 + 文件路径 + SHA256
+  LeigodAutoPause.exe --help          这张帮助
 
 配置：{CONFIG_PATH}
 日志：{LOG_PATH}
+
+说明：exe 没有商业代码签名（个人项目），下载后可用 checksum 校验完整性，
+      或先跑 selftest 看是否正常。
 """
 
 
@@ -1120,6 +1146,18 @@ def main(argv: list[str]) -> int:
     cmd = argv[1] if len(argv) > 1 else ""
     if cmd in ("--version", "-v", "version"):
         print(f"leigod-autopause {VERSION}")
+        digest = self_sha256()
+        if digest:
+            print(f"文件   {sys.executable}")
+            print(f"SHA256 {digest}")
+            print("校验   和 Release 页 SHA256SUMS.txt 一致 = 下载完整、没被替换")
+        return 0
+    if cmd in ("checksum", "sha256", "hash"):
+        digest = self_sha256()
+        if not digest:
+            print("脚本模式下没有固定产物，exe 版才有自己的 SHA256")
+            return 1
+        print(digest)
         return 0
     if cmd in ("--help", "-h", "help"):
         print(HELP_TEXT)
