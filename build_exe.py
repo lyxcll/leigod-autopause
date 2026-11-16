@@ -15,6 +15,13 @@ import os
 import subprocess
 import sys
 
+# Windows 的 CI / 老终端默认 cp1252/cp936，打 emoji 会 UnicodeEncodeError，统一切成 UTF-8
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except Exception:
+        pass
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(ROOT, "assets")
 APP_NAME = "LeigodAutoPause"
