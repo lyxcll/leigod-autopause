@@ -65,6 +65,31 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
 
 ## 用法
 
+### 最快：只下这一个文件
+
+[`leigod_autopause.py`](https://github.com/lyxcll/leigod-autopause/releases/latest/download/leigod_autopause.py) ← 点这里下载（31 KB，单文件，无依赖）
+
+放进任意目录（比如 `D:\Tools\leigod-autopause\`），然后：
+
+```powershell
+cd D:\Tools\leigod-autopause
+python leigod_autopause.py status     # 1. 只读，先确认它认识你的客户端
+python leigod_autopause.py install    # 2. 注册开机自启，后台守护
+```
+
+不需要 GitHub 账号，不需要填 token —— 它读**你自己电脑上**雷神客户端的日志拿登录态。
+
+### 或者 clone 仓库
+
+```powershell
+git clone https://github.com/lyxcll/leigod-autopause.git
+cd leigod-autopause
+python leigod_autopause.py status
+python leigod_autopause.py install
+```
+
+### 全部命令
+
 环境：Windows + Python 3.9+（`python` 在 PATH 里即可）。
 
 ```powershell
