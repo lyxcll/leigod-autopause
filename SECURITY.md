@@ -95,9 +95,11 @@
 
 ### 用 API 没能证实的（token 缺 Administration 权限，全部 403）
 
-- 分支保护（`/branches/main/protection`）、仓库 webhooks（`/hooks`）、Deploy keys（`/keys`）、
-  Actions 默认权限（`/actions/permissions`）、Actions secrets（`/actions/secrets`）。
+- 仓库 webhooks（`/hooks`）、Deploy keys（`/keys`）、
+  Actions 默认权限（`/actions/permissions`）、Actions secrets（`/actions/secrets`）、分支保护细节。
   能确认的只有：公开仓库、协作者只有 `lyxcll` 一人、environments 为 0。
+- **已确认的事实**：`GET /repos/lyxcll/leigod-autopause/branches/main` 返回 `protected: false`
+  —— 也就是说 `main` **目前没有分支保护**（可被 force push / 删除）。建议在网页上开（见下）。
 
 请在网页 **Settings** 里自查这几项（一次性，2 分钟）：
 
