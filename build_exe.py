@@ -25,7 +25,7 @@ for _stream in (sys.stdout, sys.stderr):
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(ROOT, "assets")
 APP_NAME = "LeigodAutoPause"
-VERSION = (1, 1, 0, 0)
+VERSION = (1, 2, 0, 0)
 
 
 def make_icon(path: str) -> str | None:
@@ -86,12 +86,13 @@ VERSION_INFO = """VSVersionInfo(
       StringTable('080404b0', [
         StringStruct('CompanyName', 'lyxcll'),
         StringStruct('FileDescription', '雷神加速器挂机自动暂停'),
-        StringStruct('FileVersion', '{v}.0'),
+        StringStruct('FileVersion', '{v4}'),
         StringStruct('InternalName', '{app}'),
         StringStruct('LegalCopyright', 'MIT License'),
         StringStruct('OriginalFilename', '{app}.exe'),
         StringStruct('ProductName', '雷神加速器挂机自动暂停'),
-        StringStruct('ProductVersion', '{v}.0')])]),
+        StringStruct('ProductVersion', '{v4}'),
+        StringStruct('Comments', 'https://github.com/lyxcll/leigod-autopause')])]),
     VarFileInfo([VarStruct('Translation', [2052, 1200])])
   ]
 )
@@ -108,20 +109,35 @@ def main() -> int:
         f.write(VERSION_INFO.format(
             app=APP_NAME,
             v=".".join(str(x) for x in VERSION[:3]),
+            v4=".".join(str(x) for x in VERSION),
             v0=VERSION[0], v1=VERSION[1], v2=VERSION[2], v3=VERSION[3],
         ))
+
+    # 让 PyInstaller 收集 .pyc 时就去掉 docstring / assert，产物更小、启动更快
+    os.environ["PYTHONOPTIMIZE"] = "2"
 
     args = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean", "--onefile", "--console",
+        "--log-level=WARN",
         f"--name={APP_NAME}",
         f"--version-file={vinfo}",
         # 这些模块用不到，排掉能小一点、启动快一点
         "--exclude-module=tkinter",
         "--exclude-module=unittest",
         "--exclude-module=pydoc",
+        "--exclude-module=pydoc_data",
         "--exclude-module=lib2to3",
         "--exclude-module=test",
+        "--exclude-module=setuptools",
+        "--exclude-module=pip",
+        "--exclude-module=distutils",
+        "--exclude-module=xmlrpc",
+        "--exclude-module=sqlite3",
+        "--exclude-module=asyncio",
+        "--exclude-module=multiprocessing",
+        "--exclude-module=doctest",
+        "--exclude-module=pdb",
         "leigod_autopause.py",
     ]
     if icon:
@@ -133,7 +149,13 @@ def main() -> int:
 
     exe = os.path.join(ROOT, "dist", f"{APP_NAME}.exe")
     size_mb = os.path.getsize(exe) / 1024 / 1024
-    print(f"\n✅ 打包完成：{exe}  ({size_mb:.1f} MB)")
+    import hashlib
+
+    with open(exe, "rb") as f:
+        digest = hashlib.sha256(f.read()).hexdigest()
+    print(f"\n✅ 打包完成：{exe}")
+    print(f"   体积 {size_mb:.1f} MB · v{'.'.join(str(x) for x in VERSION[:3])}")
+    print(f"   SHA256 {digest}")
     return 0
 
 

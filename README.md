@@ -68,24 +68,31 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
 
 ### 最省事：下载 exe，双击就用（免 Python）
 
-[`LeigodAutoPause.exe`](https://github.com/lyxcll/leigod-autopause/releases/latest/download/LeigodAutoPause.exe) ← 点这里下载（8.9 MB，单文件，**不用装 Python**）
+[`LeigodAutoPause.exe`](https://github.com/lyxcll/leigod-autopause/releases/latest/download/LeigodAutoPause.exe) ← 点这里下载（8.7 MB，单文件，**不用装 Python**）
 
-1. 丢进任意目录，比如 `D:\Tools\leigod-autopause\`（`config.json`、`autopause.log` 都生成在这个目录里）；
-2. **双击**它，出现菜单：
+1. 丢进任意目录，比如 `D:\Tools\leigod-autopause\`（`config.json`、`autopause.log` 都生成在这个目录里；目录不可写时自动改用 `%LOCALAPPDATA%\leigod-autopause`）；
+2. **双击**它，出现菜单（顶部实时显示现在加不加速、守护在不在）：
 
    ```
    ==========================================================
-     雷神加速器 · 挂机自动暂停   v1.1.0
+     雷神加速器 · 挂机自动暂停   v1.2.0
+     目录 D:\Tools\leigod-autopause
+     状态 加速中 · 守护中 · D:\LeiGod_Acc
    ==========================================================
-     1) 安装并后台守护（推荐，开机自启）
-     2) 只看现在状态（只读，不会暂停）
-     3) 立即暂停一次
-     4) 卸载自启并停止守护
-     9) 打开程序目录（看日志）
+     1) 安装 / 修复自启，并在后台守护   （推荐）
+     2) 刷新当前状态（只读，不会暂停）
+     3) 立即暂停一次（测试接口）
+     4) 停止守护并取消开机自启
+     5) 看日志（最近 20 行）
+     6) 打开配置文件 config.json
+     7) 打开程序目录
      0) 退出
+
+   请选择 [1-7,0]（直接回车 = 刷新状态）:
    ```
 
 3. 按 `1` 回车。它会注册开机自启、立刻在后台跑起来，然后告诉你去看 `autopause.log`。
+   之后再双击，菜单会显示「守护中」；想让它自己看日志就按 `5`，不用再开资源管理器。
 
 > Windows 第一次运行会提示「已保护你的电脑」：点 **更多信息 → 仍要运行** 即可。
 > 这个 exe 没有代码签名（个人项目），但代码全部开源，就在本仓库的 `leigod_autopause.py` 里。
@@ -146,16 +153,20 @@ python leigod_autopause.py selftest
 `status` 输出长这样：
 
 ```
-========================================================
+======================================================
+程序目录 : D:\Tools\leigod-autopause
 安装目录 : D:\LeiGod_Acc
 客户端   : 运行中
+守护进程 : 运行中（后台自动守护）
 加速状态 : 加速中 (log status=running)
 当前游戏 : 文明6  已加速 42.3 分钟
-游戏进程 : 在跑 CivilizationVI.exe（退出即暂停）
+游戏进程 : 在跑 CivilizationVI.exe（自动识别）
 键鼠空闲 : 18.5 分钟（阈值 15 分钟）
 是否触发 : 会暂停 —— 加速中 + 长时间没操作
-========================================================
+======================================================
 ```
+
+「守护进程」那行直接告诉你自启是不是活的：`未运行` 就双击 exe 按 `1` 修一下。
 
 ### 配置 `config.json`
 
@@ -188,8 +199,12 @@ python leigod_autopause.py selftest
 | `game_exit_grace_seconds` | 游戏退出后宽限几秒才停，默认 90。给「退出重进 / 崩溃重启 / 退出来查攻略」留余量 |
 | `game_absent_pause_seconds` | 加速中但一直没见游戏在跑，多久后也停，默认 300。用于「先关游戏、后忘了关加速」或工具重启后没看到游戏进程的场景；填 `0` 关闭这条 |
 | `extra_install_dirs` | 雷神装在非常规目录时手动补，例如 `["E:\\LeiGod_Acc"]`；配了会优先使用 |
+| `heartbeat_minutes` | 日志里多久打一行 `💓 心跳`（默认 30，填 `0` 关闭）；用来确认守护还活着 |
 
 改完配置**不用重启**（守护每轮都重新读），但改 `config.json` 的编码请保持 UTF-8。
+
+升级后配置文件会自动补齐新字段（日志里写一行「🔧 配置已升级，补上 N 个新项」），
+手滑填了离谱的值也会被拉回安全范围（比如 `idle_minutes: -5` → `0`、`check_interval_seconds: 1` → `10`）。
 
 ### 不用按游戏配置
 
@@ -246,7 +261,7 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 日志里正常长这样：
 
 ```
-[22:19:19] 👀 开始守护：D:\LeiGod_Acc，每 30s 检查一次（空闲阈值 15 分钟，游戏退出即暂停）
+[22:19:19] 👀 开始守护 v1.2.0（pid 27900）：D:\LeiGod_Acc，每 30s 检查一次（空闲阈值 15 分钟，游戏退出即暂停）
 [22:19:20] 📊 当前：加速中（彩虹六号:围攻 X），游戏进程 无（自动识别）
 [22:19:22] ✅ 已暂停（加速中但游戏没在跑，无需再加速（彩虹六号:围攻 X））msg=成功
 ```
@@ -275,7 +290,18 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 不放心的可以直接用 Python 版 `leigod_autopause.py`（内容完全开源），或者先 `--dry-run` 跑几天。
 
 **日志文件在哪？**
-`autopause.log`（同目录，自动滚动，只留最近 800 行），超过 512 KB 自动截断。
+`autopause.log`（同目录，自动滚动，只留最近 800 行），超过 512 KB 自动截断。菜单按 `5` 直接看最近 20 行。
+
+**把 exe 放进 `C:\Program Files` 后生成不了配置？**
+那个目录普通权限写不了。工具检测到目录不可写会自动退到 `%LOCALAPPDATA%\leigod-autopause\`，
+菜单/`status` 的「程序目录」那行会标出来。想固定住就把 exe 放到你自己有写权限的目录（比如 `D:\Tools\...`）。
+
+**程序自己崩了怎么办？**
+崩溃会写进 `autopause.log`：一行 `💥 崩溃：…` 加完整 traceback（不会弹窗、不会静默消失）。
+同时 VBS 守护循环会在 5 秒后重新拉起，所以「崩一次」通常只丢一次检查。
+
+**怎么看版本？是不是新版？**
+`LeigodAutoPause.exe --version`，或者双击看菜单表头（`v1.2.0`）。`--help` 列出全部命令。
 
 **之前挂机几个小时都没停？**
 先看日志里有没有 `💓 心跳`。没有 = 进程当时不在（被杀 / 没开机自启），工具再聪明也没用；
@@ -300,6 +326,8 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 ---
 
 ## 维护 / 适配新版本
+
+更新记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 这个工具只依赖两样东西：**客户端日志格式**和**pause 接口的返回码**。雷神升级后可以这样自查：
 
