@@ -78,7 +78,7 @@ def _pick_base_dir() -> tuple[str, bool]:
 
 
 BASE_DIR, BASE_DIR_FALLBACK = _pick_base_dir()
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 LOG_PATH = os.path.join(BASE_DIR, "autopause.log")
 TOKEN_CACHE = os.path.join(BASE_DIR, ".token_cache")
@@ -705,9 +705,25 @@ def watcher_alive() -> bool:
         return False
 
 
+def _note_duplicate_once(hours: float = 1.0) -> None:
+    """别的实例（另一个装好的版本 / 另一个 exe）已经在守护时，最多每小时记一行。
+
+    VBS 守护循环每 5 秒会重启一次，若每次退出都写日志，日志会被「已经在跑了」刷屏。
+    """
+    marker = os.path.join(BASE_DIR, ".duplicate_note")
+    try:
+        if os.path.exists(marker) and time.time() - os.path.getmtime(marker) < hours * 3600:
+            return
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(str(int(time.time())))
+        log("ℹ️ 已经有一个守护在跑了（可能是另一个装好的版本），本次启动退出")
+    except OSError:
+        pass
+
+
 def cmd_watch(cfg: dict, dry_run: bool = False) -> int:
     if not _single_instance():
-        log("ℹ️ 已经有一个守护在跑了，本次启动退出")
+        _note_duplicate_once()
         return 0
     install_dirs = find_install_dirs(cfg)
     if not install_dirs:
@@ -856,11 +872,16 @@ def cmd_install(cfg: dict) -> int:
         #    VBScript 里字符串内的双引号要写成两个
         vbs_cmd = cmd.replace('"', '""')
         try:
+            os.makedirs(os.path.dirname(link), exist_ok=True)
             with open(link, "w", encoding="gbk") as f:
                 f.write('Set sh = CreateObject("WScript.Shell")\n')
                 f.write("Do\n")
+                f.write("  t0 = Timer\n")
                 f.write(f'  sh.Run "{vbs_cmd}", 0, True\n')
-                f.write("WScript.Sleep 5000\n")
+                f.write("  dt = Timer - t0\n")
+                f.write("  If dt < 0 Then dt = dt + 86400\n")
+                # 秒退（说明已经有别的守护在跑）就退避到 60 秒，别每 5 秒拉一次进程
+                f.write("  If dt < 60 Then WScript.Sleep 60000 Else WScript.Sleep 5000\n")
                 f.write("Loop\n")
             log(f"✅ 已回退为启动文件夹自启：{link}")
         except Exception as e:

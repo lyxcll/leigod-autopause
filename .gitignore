@@ -14,3 +14,4 @@ build/
 .venv-build/
 SHA256SUMS.txt
 *.pfx
+.duplicate_note
