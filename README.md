@@ -75,7 +75,7 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
 
    ```
    ==========================================================
-     雷神加速器 · 挂机自动暂停   v1.2.2
+     雷神加速器 · 挂机自动暂停   v1.2.3
      目录 D:\Tools\leigod-autopause
      状态 加速中 · 守护中 · D:\LeiGod_Acc
    ==========================================================
@@ -289,6 +289,12 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 **token 什么时候失效？**
 你在客户端退出登录 / 换号后失效（返回 `400007`）。工具每轮都重新读日志拿最新 token，所以重新登录后会自动跟上。
 
+**token 存在哪？安全吗？**
+只存在本机 `.token_cache`，用 Windows **DPAPI** 按当前账户加密（拷到别人机器/别的账户解不开），
+文件 ACL 也收紧到只剩你、SYSTEM、Administrators；日志里任何 token 都会在落盘前变成 `***`，
+`status` 只显示前 4 位。**但**：同一账户下的恶意程序、管理员权限的对手仍然读得到——
+这部分无解，完整说明见 [SECURITY.md](SECURITY.md)。
+
 **杀毒软件 / SmartScreen 报警？**
 没有网络服务、没有注入，只是个读日志 + 发一个 HTTP 请求的小工具。exe 是 PyInstaller 打的、没签名，
 所以下载后第一次运行会出现「已保护你的电脑」——点 **更多信息 → 仍要运行**。
@@ -306,7 +312,7 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 同时 VBS 守护循环会在 5 秒后重新拉起，所以「崩一次」通常只丢一次检查。
 
 **怎么看版本？是不是新版？**
-`LeigodAutoPause.exe --version`，或者双击看菜单表头（`v1.2.0`）。`--help` 列出全部命令。
+`LeigodAutoPause.exe --version`，或者双击看菜单表头（`v1.2.3`）。`--help` 列出全部命令。
 
 **之前挂机几个小时都没停？**
 先看日志里有没有 `💓 心跳`。没有 = 进程当时不在（被杀 / 没开机自启），工具再聪明也没用；
@@ -349,11 +355,16 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 Get-FileHash .\LeigodAutoPause.exe -Algorithm SHA256
 ```
 
-输出跟 Release 页面里 `SHA256SUMS.txt` 的那一行对上即可。
+输出跟 Release 页面里 `SHA256SUMS.txt` 的那一行对上，说明**下载完整、没被截断或传坏**。
 
-> 说明：`checksum` 是「自报」的，能挡住**下载被截断 / 损坏 / 被中间人替换**，
-> 但挡不住有人恶意重打包（他可以改代码让自报值照样对得上）。防这一层靠的是
-> 「exe 由 GitHub Actions 从本仓库源码构建」这条链。要验「签发者身份」，只能上真证书。
+> **说清楚它挡不住什么**：`SHA256SUMS.txt` 和 exe 来自同一个 Release。能改 Release 的人
+> 可以两个一起换，校验依旧「通过」。所以：
+>
+> - `checksum` **不是**防篡改，也**不是**身份认证；
+> - 它也挡不住「上游被入侵后重新打包」和「这个 exe 是否真由这份源码构建」（PyInstaller 产物不可复现）；
+> - 相对可信的只有这条链：**源码公开可审计 + CI 从源码构建**。要验签发者身份，只能上真证书。
+>
+> 完整威胁模型（token 怎么存、哪些攻击防不住）见 [SECURITY.md](SECURITY.md)。
 
 ### 想让它变成「有签名」的
 

@@ -78,7 +78,7 @@ def _pick_base_dir() -> tuple[str, bool]:
 
 
 BASE_DIR, BASE_DIR_FALLBACK = _pick_base_dir()
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 LOG_PATH = os.path.join(BASE_DIR, "autopause.log")
 TOKEN_CACHE = os.path.join(BASE_DIR, ".token_cache")
@@ -177,6 +177,8 @@ def self_sha256() -> str | None:
 
 
 def log(msg: str) -> None:
+    # 任何一行落盘前先脱敏：异常信息、接口响应里都可能意外带出 token
+    msg = redact(str(msg))
     line = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}"
     try:
         if sys.stdout is not None:      # 无控制台（pythonw）时跳过打印，只写文件
@@ -274,9 +276,114 @@ def save_config(cfg: dict) -> None:
 
 
 def mask(token: str | None) -> str:
+    """日志里只留前 4 位，够你认出是哪个号，又不足以被拿去用。"""
     if not token:
         return "(none)"
-    return f"{token[:4]}***{token[-3:]}(len={len(token)})"
+    return f"{token[:4]}*** (len={len(token)})"
+
+
+# --------------------------------------------------------------------------- #
+# 敏感数据：脱敏 / 文件 ACL / DPAPI 加密
+# --------------------------------------------------------------------------- #
+_SECRET_RES = (
+    re.compile(r"(account_token=)[A-Za-z0-9_\-]{8,}"),
+    re.compile(r"(account_token\"?\s*[:=]\s*\"?)[A-Za-z0-9_\-]{8,}"),
+    re.compile(r"(github_pat_)[A-Za-z0-9_]{16,}"),
+)
+_TOKEN_CACHE_MAGIC = b"DPAPI1\n"
+
+
+def redact(text: str) -> str:
+    """把可能混进日志的凭证抹掉（响应体、异常信息里都可能带 token）。"""
+    out = text
+    for pat in _SECRET_RES:
+        out = pat.sub(lambda m: m.group(1) + "***", out)
+    return out
+
+
+def harden_file(path: str) -> None:
+    """收紧文件 ACL：去掉继承来的 Users / Authenticated Users，只留本人 + SYSTEM + 管理员。
+
+    Windows 默认继承会把「Authenticated Users」写成可改、Users 可读，
+    放在 D:\\Tools、E:\\Edge 这类目录时，同一台机器的其他账户能直接读走 token。
+    """
+    if os.name != "nt":
+        return
+    user = os.environ.get("USERNAME")
+    if not user or not os.path.exists(path):
+        return
+    try:
+        subprocess.run(
+            ["icacls", path, "/inheritance:r",
+             "/grant:r", f"{user}:F",
+             "/grant:r", "*S-1-5-18:F",      # SYSTEM
+             "/grant:r", "*S-1-5-32-544:F"],  # Administrators
+            capture_output=True, timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except Exception:
+        pass
+
+
+class _DATA_BLOB(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _dpapi(protect: bool, data: bytes, entropy: bytes = b"leigod-autopause") -> bytes | None:
+    """用 Windows DPAPI 做「只属于当前用户」的加解密（不用第三方库）。
+
+    加密后的 token 只有同一个 Windows 账户能解开：别人拿到文件也用不了，
+    拷到另一台机器更解不开。
+    """
+    if os.name != "nt" or not data:
+        return None
+    try:
+        crypt32 = ctypes.windll.crypt32
+        kernel32 = ctypes.windll.kernel32
+        buf_in = ctypes.create_string_buffer(data, len(data))
+        buf_ent = ctypes.create_string_buffer(entropy, len(entropy))
+        blob_in = _DATA_BLOB(len(data), ctypes.cast(buf_in, ctypes.POINTER(ctypes.c_char)))
+        blob_ent = _DATA_BLOB(len(entropy), ctypes.cast(buf_ent, ctypes.POINTER(ctypes.c_char)))
+        blob_out = _DATA_BLOB()
+        fn = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
+        ok = fn(ctypes.byref(blob_in), None, ctypes.byref(blob_ent), None, None,
+                0x1,  # CRYPTPROTECT_UI_FORBIDDEN
+                ctypes.byref(blob_out))
+        if not ok:
+            return None
+        try:
+            return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        finally:
+            kernel32.LocalFree(blob_out.pbData)
+    except Exception:
+        return None
+
+
+def save_token(token: str) -> None:
+    """缓存 token：优先 DPAPI 加密，再把文件 ACL 收紧到只剩本人。"""
+    try:
+        blob = _dpapi(True, token.encode("utf-8"))
+        data = (_TOKEN_CACHE_MAGIC + blob) if blob else token.encode("utf-8")
+        with open(TOKEN_CACHE, "wb") as f:
+            f.write(data)
+        harden_file(TOKEN_CACHE)
+    except OSError:
+        pass
+
+
+def load_cached_token() -> str | None:
+    try:
+        with open(TOKEN_CACHE, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return None
+    if raw.startswith(_TOKEN_CACHE_MAGIC):
+        plain = _dpapi(False, raw[len(_TOKEN_CACHE_MAGIC):])
+        return plain.decode("utf-8") if plain else None
+    try:  # 旧版明文缓存：读出来后会重新加密
+        return raw.decode("utf-8").strip() or None
+    except UnicodeDecodeError:
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -342,19 +449,13 @@ def read_token(install_dir: str) -> str | None:
                     m = pat.search(line)
                     if m:
                         token = m.group(1)
-                        try:
-                            with open(TOKEN_CACHE, "w", encoding="utf-8") as tf:
-                                tf.write(token)
-                        except Exception:
-                            pass
+                        save_token(token)
                         return token
         except Exception:
             continue
-    try:
-        if os.path.exists(TOKEN_CACHE):
-            return open(TOKEN_CACHE, "r", encoding="utf-8").read().strip() or None
-    except Exception:
-        pass
+    token = load_cached_token()
+    if token:
+        return token
     return None
 
 
@@ -1124,6 +1225,14 @@ def cmd_selftest(cfg: dict) -> int:
         check("帮助含校验说明", "checksum" in HELP_TEXT, True)
         check("守护检测可用", callable(watcher_alive), True)
         check("自身校验可用", callable(self_sha256), True)
+        check("日志脱敏", redact("x account_token=abcDEF123456_xyz y"), "x account_token=*** y")
+        check("JSON 脱敏", redact('"account_token":"abcDEF123456_xyz"'),
+              '"account_token":"***"')
+        check("GitHub token 脱敏",
+              redact("Authorization: Bearer github_pat_" + "A1" * 20).count("github_pat_***"), 1)
+        blob = _dpapi(True, b"selftest-token")
+        check("DPAPI 加密往返", _dpapi(False, blob) if blob else None, b"selftest-token")
+        check("文件 ACL 加固可用", callable(harden_file), True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1155,8 +1264,10 @@ HELP_TEXT = f"""\
 配置：{CONFIG_PATH}
 日志：{LOG_PATH}
 
-说明：exe 没有商业代码签名（个人项目），下载后可用 checksum 校验完整性，
-      或先跑 selftest 看是否正常。
+说明：exe 没有商业代码签名（个人项目）。checksum 只能证明「下载完整、没被截断」
+      （和 SHA256SUMS.txt 同源，被人同时替换两者就无效），不提供身份认证。
+      想自己核对二进制是不是从这份源码构建的：见 SECURITY.md。EXE 首次运行会
+      读雷神客户端的日志，token 只存在本机，并用 Windows DPAPI 按当前账户加密。
 """
 
 
@@ -1164,6 +1275,9 @@ def main(argv: list[str]) -> int:
     setup_console()
     install_crash_hook()
     cfg = load_config()
+    # 配置和日志里可能有账号标识；收紧 ACL，别让同机其他账户读到
+    harden_file(CONFIG_PATH)
+    harden_file(LOG_PATH)
     cmd = argv[1] if len(argv) > 1 else ""
     if cmd in ("--version", "-v", "version"):
         print(f"leigod-autopause {VERSION}")
@@ -1171,7 +1285,8 @@ def main(argv: list[str]) -> int:
         if digest:
             print(f"文件   {sys.executable}")
             print(f"SHA256 {digest}")
-            print("校验   和 Release 页 SHA256SUMS.txt 一致 = 下载完整、没被替换")
+            print("校验   与 Release 的 SHA256SUMS.txt 比对：一致 = 下载完整、没被截断/损坏")
+        print("       但两者同源，挡不住「连 exe 和校验值一起换掉」；详见 SECURITY.md 的威胁模型")
         return 0
     if cmd in ("checksum", "sha256", "hash"):
         digest = self_sha256()

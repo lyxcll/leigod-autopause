@@ -2,6 +2,35 @@
 
 版本号规则：`主.次.修订`。配置文件向后兼容，旧配置启动时自动补齐新字段。
 
+## v1.2.3 — 安全加固：别把凭证摊在桌面上
+
+**token 存储**
+
+- `.token_cache` 改用 Windows **DPAPI** 按当前账户加密（`CryptProtectData`，无第三方库依赖）；
+  旧版明文缓存会在读取后自动迁移成密文。拷到别的账户/机器 = 解不开。
+- 收紧文件 ACL：`icacls /inheritance:r`，只留 当前用户 + SYSTEM + Administrators。
+  Windows 默认继承会给 `Authenticated Users` 可改、`Users` 可读 —— 放在 `E:\Edge`、`D:\Tools`
+  这类目录时，**同一台机器的其他账户原本能直接读走 token**（实测确认过）。
+- `config.json` 与 `autopause.log` 启动时同样收紧 ACL。
+
+**日志与输出**
+
+- `log()` 落盘前统一脱敏：`account_token=…`、JSON 形式、`github_pat_…` 一律 `***`；
+  异常信息和接口响应里的凭证也不会被写进日志。
+- `mask()` 只保留前 4 位：`2a3G*** (len=27)`，不再显示末 3 位，`status` 可以放心贴到 issue。
+
+**说清楚边界（不再含糊）**
+
+- `checksum` / `SHA256SUMS.txt` 只证明「下载完整、没被截断」，**不是防篡改、不是身份认证**；
+  它与 exe 同源，被同时替换就无效。`--version`、README、Release 说明全部改成这个措辞。
+- `SECURITY.md` 重写：威胁模型、哪些防住了、哪些防不住（同账户恶意程序、管理员、内存取证）、
+  为什么 PyInstaller 产物不可复现、`uninstall` 保留哪些文件。
+
+**供应链**
+
+- 所有 workflow 的 actions 从 `@v4`/`@v5` 固定到 **commit SHA**（注释标版本），避免 tag 被移动。
+- 云端兜底 workflow 改用 `--data @-` 从 stdin 传 body，token 不再出现在 `curl` 进程命令行里。
+
 ## v1.2.2 — 守护循环不再刷日志 / 空转
 
 - 已有别的守护在跑时（比如脚本版和 exe 版都装了），本次启动**静默退出**，最多每小时记一行提示 ——

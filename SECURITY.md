@@ -1,17 +1,71 @@
 # 安全说明
 
-## account_token 等于账号凭证
+这份文档把「我们防住了什么、没防住什么」写清楚，不粉饰。发现文档和代码不一致，请开 issue。
 
-工具需要从雷神客户端日志里读出 `account_token` 来调用官方 pause 接口。这个 token
-**等同于你的加速凭证**：拿到它的人可以暂停/恢复你的加速，不需要密码。
+## 一句话威胁模型
 
-所以：
+- **信任**：你机器上的雷神客户端日志、`api.leigod.com`、本仓库源码与 CI 产物。
+- **部分不信任**：下载渠道（所以要校验，但校验有上限，见下文）。
+- **无法防**：已经以你的用户身份运行的恶意程序、管理员/SYSTEM 级对手、内存取证。
 
-- 日志、`config.json`、`.token_cache` 都已在 `.gitignore` 里，**别提交进仓库**；
-- 贴 issue 之前先检查，`2a3G***109` 之外的长串都要抹掉（`status` 输出是自动脱敏的，可以直接贴）；
-- GitHub Actions 的每日兜底只把 token 放 **Repository secret**，不要写在 workflow 文件里。
+## 1. `account_token` 等同于账号凭证
 
-## 报告漏洞
+工具从雷神客户端日志里读 `account_token` 调官方 pause 接口。拿到它的人不需要密码
+就能暂停/恢复你的加速，所以它按凭证对待。
 
-如果发现能导致 token 泄露、命令注入（比如日志内容被当成命令执行）之类的问题，
-请用 GitHub 的 **Security → Report a vulnerability**（私密 advisory），不要开公开 issue。
+**已经做的加固（v1.2.3 起）**
+
+| 措施 | 位置 | 效果 |
+| --- | --- | --- |
+| Windows DPAPI 加密缓存 | `.token_cache`（`save_token` / `load_cached_token`） | 只有当前 Windows 账户能解开；文件被拷到别的账户/机器 = 一堆密文 |
+| 收紧文件 ACL | `harden_file()`：`icacls /inheritance:r` 只留 当前用户 + SYSTEM + Administrators | 去掉系统默认继承的 `Authenticated Users:(M)` / `Users:(RX)`（同机其他账户原本可读走 token） |
+| 日志脱敏 | `redact()`，`log()` 写盘前统一处理 | `account_token=…`、JSON 形式、`github_pat_…` 一律变 `***`；异常/响应体里的凭证也不会落盘 |
+| 终端只显示前 4 位 | `mask()` → `2a3G*** (len=27)` | `status` 输出可以直接贴到 issue |
+
+**仍然挡不住的（明确列出）**
+
+- **同账户的恶意程序**：DPAPI 是「按用户」加密，同一用户下的程序可以调用同样的 API 解密；
+  它本来也能直接读雷神自己的日志。用户态加密防的是「别的账户/拷走文件」，不是防你中的毒。
+- **管理员 / SYSTEM**：可以读任何文件、改 ACL、注入进程。无解。
+- **雷神客户端把 token 明文写在日志里**：这是它的设计，本工具只能尽量不扩散、不外传。
+- **token 有效期**：退出雷神登录后旧 token 是否立即失效，取决于雷神服务端，未验证。
+
+建议：不要把 `.token_cache`、`autopause.log`、`config.json` 传给别人或提交进仓库
+（`.gitignore` 已覆盖）。贴 issue 时 `status` 输出是脱敏的，可以直接贴。
+
+## 2. exe 没有代码签名，意味着什么
+
+- 没有 Authenticode 签名 → Windows 无法证明「这是谁发布的」，SmartScreen 会弹拦截，**这是正常现象**；
+- `checksum` / `SHA256SUMS.txt` 能证明的只有：**你下到的字节 = Release 页记录的那份**。
+  它能发现下载截断、CDN 传坏、镜像投毒；
+- **它挡不住**：能改 Release 的攻击者（exe 和 `SHA256SUMS.txt` 同源，一起换就一致）、
+  上游被入侵后重新打包、以及「这个 exe 到底是不是这份源码构建的」；
+- 所以：`checksum` **不是**防篡改，也**不是**身份认证。`--version` 里的提示文字已按此措辞。
+
+**相对可信的部分**
+
+- 源码公开、可审计，CI 用 `build-exe.yml` 从源码构建并上传产物；
+- 但 PyInstaller 产物**不是 bit-for-bit 可复现**（含构建时间戳/环境差异），
+  所以「下载的 exe 就是这份源码」只能靠信任 GitHub Actions 的构建记录，而不能本地复算。
+- 想完全自主：`pip install pyinstaller pillow && python build_exe.py` 自己构建，只信自己的产物。
+
+**真签名怎么办**：买 OV/EV 证书或申请 [SignPath](https://signpath.io/) 开源签名，
+把 `.pfx` 放进 secrets（`CODE_SIGN_PFX_BASE64` / `CODE_SIGN_PFX_PASSWORD`）即可，
+流水线已内置 `scripts/sign_exe.ps1`，**顺序是「先签名、后算 SHA256」**。
+
+## 3. 本地攻击面清单
+
+- 程序只做三件事：读雷神日志、调 `tasklist`/`icacls`/`schtasks`、`POST https://webapi.leigod.com/api/user/pause`；
+- 没有监听端口、没有反连、不执行日志里的内容（日志只用于正则提取）；
+- 自启：优先计划任务（需管理员，普通用户会 `Access is denied` 后回退），否则写启动文件夹的
+  VBS 循环守护；VBS 只运行写死的 exe 路径；
+- 供应链：`.github/workflows/*.yml` 里的 actions 已按 **commit SHA** 固定（注释里标了版本），
+  避免 tag 被移动后执行到别的代码；
+- `optional-daily-pause.yml` 只打印响应状态码，不打印 token；token 来自 Repository secret；
+- `uninstall` 会删计划任务和 VBS、结束守护进程；`config.json` / 日志 / `.token_cache` 保留，需手动删。
+
+## 4. 报告漏洞
+
+能导致 token 泄露、命令注入（例如把日志内容当命令执行）、权限提升的问题，
+请用 **Security → Report a vulnerability**（私密 advisory），不要开公开 issue。
+普通 bug 走 issue 模板即可。
