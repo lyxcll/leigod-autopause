@@ -63,6 +63,11 @@
   避免 tag 被移动后执行到别的代码；
 - `optional-daily-pause.yml` 只打印响应状态码，不打印 token；token 来自 Repository secret；
 - `uninstall` 会删计划任务和 VBS、结束守护进程；`config.json` / 日志 / `.token_cache` 保留，需手动删。
+- **装在哪很重要**：exe、`config.json`、`.token_cache` 都放在「程序目录」里。
+  下载目录（`下载`、`E:\Edge` 这类）通常带 `Authenticated Users:(M)` 继承权限，
+  同机其他账户可以**替换 exe 或读取配置**。v1.2.4 起推荐把程序目录建在只有自己能写的位置，
+  本机安装已迁到 `%LOCALAPPDATA%\leigod-autopause`（ACL 只有 SYSTEM / Administrators / 当前用户），
+  并配了桌面快捷方式「雷神自动暂停」。
 
 ## 5. 第二轮自审记录（v1.2.4）
 

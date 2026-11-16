@@ -70,7 +70,9 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
 
 [`LeigodAutoPause.exe`](https://github.com/lyxcll/leigod-autopause/releases/latest/download/LeigodAutoPause.exe) ← 点这里下载（8.7 MB，单文件，**不用装 Python**）
 
-1. 丢进任意目录，比如 `D:\Tools\leigod-autopause\`（`config.json`、`autopause.log` 都生成在这个目录里；目录不可写时自动改用 `%LOCALAPPDATA%\leigod-autopause`）；
+1. 放进一个**只有自己能写**的目录，推荐 `%LOCALAPPDATA%\leigod-autopause\`
+   （`config.json`、`autopause.log` 都生成在这个目录里；目录不可写时程序会自动改用这个位置）。
+   不建议放下载目录：那里常带 `Authenticated Users` 可写权限，同机其他账户能换掉 exe；
 2. **双击**它，出现菜单（顶部实时显示现在加不加速、守护在不在）：
 
    ```
