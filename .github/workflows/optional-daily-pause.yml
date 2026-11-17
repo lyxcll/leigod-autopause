@@ -20,8 +20,9 @@ jobs:
         run: |
           set -u
           if [ -z "${LEIGOD_TOKEN:-}" ]; then
-            echo "::error::没有配置 secrets.LEIGOD_TOKEN"
-            exit 1
+            # 这是「可选」的云端兜底：没配 secret 就不该报红，跳过并说明怎么开
+            echo "::notice::没有配置 secrets.LEIGOD_TOKEN，本次跳过（启用方法：Settings → Secrets and variables → Actions → New repository secret，名字填 LEIGOD_TOKEN）"
+            exit 0
           fi
 
           body="{\"account_token\":\"${LEIGOD_TOKEN}\",\"lang\":\"zh_CN\"}"
