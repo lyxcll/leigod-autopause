@@ -1,4 +1,4 @@
-﻿name: Release exe
+name: Release exe
 
 # 打 tag（v1.1.0 这种）时自动打包 exe 并传进对应的 Release。
 # 也可以手动触发：Actions → Release exe → Run workflow（只产出 artifact，不发布）。
@@ -31,10 +31,15 @@ jobs:
       - name: 打包单文件 exe
         run: python build_exe.py
 
-      - name: 冒烟测试（版本号 + 离线自检）
+      - name: 打包便携版（onedir，免解压）
+        run: python build_exe.py --onedir
+
+      - name: 冒烟测试（两个版本都测：版本号 + 离线自检）
         run: |
           dist\LeigodAutoPause.exe --version
           dist\LeigodAutoPause.exe selftest
+          dist\LeigodAutoPause\LeigodAutoPause.exe --version
+          dist\LeigodAutoPause\LeigodAutoPause.exe selftest
 
       # 配了证书才签：没配就跳过，构建照常出未签名 exe（README 有说明为什么）
       - name: 可选代码签名
@@ -42,15 +47,24 @@ jobs:
         env:
           CODE_SIGN_PFX_BASE64: ${{ secrets.CODE_SIGN_PFX_BASE64 }}
           CODE_SIGN_PFX_PASSWORD: ${{ secrets.CODE_SIGN_PFX_PASSWORD }}
-        run: ./scripts/sign_exe.ps1 -Path dist\LeigodAutoPause.exe
+        run: |
+          ./scripts/sign_exe.ps1 -Path dist\LeigodAutoPause.exe
+          ./scripts/sign_exe.ps1 -Path dist\LeigodAutoPause\LeigodAutoPause.exe
+          # 签名会改文件内容，压缩包要在签名之后重新打
+          Remove-Item dist\LeigodAutoPause-portable.zip -ErrorAction SilentlyContinue
+          Compress-Archive -Path dist\LeigodAutoPause -DestinationPath dist\LeigodAutoPause-portable.zip -Force
 
       - name: 生成 SHA256SUMS 并核对 exe 自报的哈希
         shell: pwsh
         run: |
           $exe = "dist\LeigodAutoPause.exe"
+          $zip = "dist\LeigodAutoPause-portable.zip"
           $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
-          "{0}  LeigodAutoPause.exe" -f $hash | Set-Content -NoNewline -Encoding ascii SHA256SUMS.txt
-          Add-Content -Encoding ascii SHA256SUMS.txt ""
+          $zipHash = (Get-FileHash $zip -Algorithm SHA256).Hash
+          @(
+            "{0}  LeigodAutoPause.exe" -f $hash,
+            "{0}  LeigodAutoPause-portable.zip" -f $zipHash
+          ) | Set-Content -Encoding ascii SHA256SUMS.txt
           Get-Content SHA256SUMS.txt
           $self = (& $exe checksum).Trim()
           if ($self -ne $hash) { throw "exe 自报 $self 与文件哈希 $hash 不一致" }
@@ -62,6 +76,7 @@ jobs:
           name: LeigodAutoPause-exe
           path: |
             dist/LeigodAutoPause.exe
+            dist/LeigodAutoPause-portable.zip
             SHA256SUMS.txt
 
       - name: 附到 Release
@@ -70,19 +85,26 @@ jobs:
         with:
           files: |
             dist/LeigodAutoPause.exe
+            dist/LeigodAutoPause-portable.zip
             SHA256SUMS.txt
           fail_on_unmatched_files: true
-          name: "${{ github.ref_name }} — 雷神加速器挂机自动暂停（单文件 exe）"
+          name: "${{ github.ref_name }} — 雷神加速器挂机自动暂停"
           body: |
-            ## 下载即用（免 Python）
+            ## 两个版本，选一个
 
-            **LeigodAutoPause.exe**（单文件）—— 放到任意有写权限的目录，双击，按 `1`。
+            | 下载 | 适合 | 启动 / status |
+            |---|---|---|
+            | **LeigodAutoPause.exe**（单文件，8 MB） | 最省事，双击就用 | ~0.7 s / ~1.0 s |
+            | **LeigodAutoPause-portable.zip**（便携版） | 想要更快、不想每次解压到临时目录 | ~0.1 s / ~0.4 s |
+
+            单文件版：放到任意有写权限的目录，双击，按 `1`。
+            便携版：解压到自己的目录，双击里面的 `LeigodAutoPause.exe`，按 `1`。两者功能完全一样。
 
             > 首次运行若提示「已保护你的电脑」：点 **更多信息 → 仍要运行**。个人项目没有商业代码签名（证书要钱/要组织资质），代码全部开源在本仓库。
 
             ## 校验下载（重要）
 
-            本页附了 `SHA256SUMS.txt`。下载后核对一下，能确认文件**完整、没被截断/传坏**。它和 exe 同源，**挡不住「两者一起被换」**，也不提供身份认证 —— 安全边界见 [SECURITY.md](https://github.com/lyxcll/leigod-autopause/blob/main/SECURITY.md)。
+            本页附了 `SHA256SUMS.txt`。下载后核对一下，能确认文件**完整、没被截断/传坏**。它和产物同源，**挡不住「两者一起被换」**，也不提供身份认证 —— 安全边界见 [SECURITY.md](https://github.com/lyxcll/leigod-autopause/blob/main/SECURITY.md)。
 
             ```powershell
             (Get-FileHash .\LeigodAutoPause.exe -Algorithm SHA256).Hash

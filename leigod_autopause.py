@@ -75,7 +75,7 @@ def _pick_base_dir() -> tuple[str, bool]:
 
 
 BASE_DIR, BASE_DIR_FALLBACK = _pick_base_dir()
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 LOG_PATH = os.path.join(BASE_DIR, "autopause.log")
 TOKEN_CACHE = os.path.join(BASE_DIR, ".token_cache")
@@ -1363,6 +1363,63 @@ def _menu_exec(title: str, fn, cfg: dict) -> None:
         raise SystemExit(0)
 
 
+def _mei_dirs(min_age_hours: float = 0.0) -> list[tuple[str, int, float]]:
+    """列出 %TEMP% 里的 PyInstaller onefile 解压目录（_MEIxxxx），返回 (路径, 字节数, 年龄秒)。"""
+    import tempfile
+    import time as _time
+
+    tmp = tempfile.gettempdir()
+    out: list[tuple[str, int, float]] = []
+    try:
+        names = os.listdir(tmp)
+    except OSError:
+        return out
+    for name in names:
+        if not name.startswith("_MEI"):
+            continue
+        path = os.path.join(tmp, name)
+        if not os.path.isdir(path):
+            continue
+        try:
+            age = _time.time() - os.path.getmtime(path)
+        except OSError:
+            continue
+        if age < min_age_hours * 3600:
+            continue
+        size = 0
+        for root, _dirs, files in os.walk(path):
+            for fn in files:
+                try:
+                    size += os.path.getsize(os.path.join(root, fn))
+                except OSError:
+                    pass
+        out.append((path, size, age))
+    return out
+
+
+def cmd_clean_temp(cfg: dict) -> int:
+    """清掉 %TEMP% 里 12 小时前的 _MEI* 残留（onefile 每次运行都会解压一份）。"""
+    import shutil
+
+    stale = _mei_dirs(min_age_hours=12)
+    if not stale:
+        print("🧹 没有需要清理的临时文件（_MEI* 残留都在 12 小时内）")
+        return 0
+    total = sum(s for _p, s, _a in stale)
+    print(f"发现 {len(stale)} 个超过 12 小时的解压残留，共 {total / 1024 / 1024:.1f} MB：")
+    removed = freed = failed = 0
+    for path, size, _age in stale:
+        try:
+            shutil.rmtree(path)
+            removed += 1
+            freed += size
+        except Exception:
+            failed += 1
+    print(f"🧹 已删除 {removed} 个（释放 {freed / 1024 / 1024:.1f} MB）"
+          + (f"，{failed} 个删不掉（可能被占用）" if failed else ""))
+    return 1 if failed else 0
+
+
 def cmd_menu(cfg: dict) -> int:
     """双击 exe 时的傻瓜菜单（不传参数才会进这里）。"""
     actions = {
@@ -1371,6 +1428,7 @@ def cmd_menu(cfg: dict) -> int:
         "3": ("立即暂停一次（测试接口）", cmd_pause),
         "4": ("停止守护并取消开机自启", cmd_uninstall),
         "8": ("体检（自启 / 守护 / 日志 / 网络 / token）", cmd_doctor),
+        "9": ("清理临时文件（onefile 解压残留）", cmd_clean_temp),
     }
     while True:
         _print_menu_header(cfg)
@@ -1382,10 +1440,11 @@ def cmd_menu(cfg: dict) -> int:
         print("  6) 打开配置文件 config.json")
         print("  7) 打开程序目录")
         print("  8) 体检（自启 / 守护 / 日志 / 网络 / token）")
+        print("  9) 清理临时文件（onefile 解压残留）")
         print("  0) 退出")
         print()
         try:
-            choice = (input(c("请选择 [1-8,0]（直接回车 = 刷新状态）: ", "cyan")) or "2").strip()
+            choice = (input(c("请选择 [1-9,0]（直接回车 = 刷新状态）: ", "cyan")) or "2").strip()
         except (EOFError, KeyboardInterrupt):
             return 0
         if choice == "0":
@@ -1545,7 +1604,19 @@ def cmd_doctor(cfg: dict) -> int:
     else:
         row("bad", "守护进程没在跑", "双击 exe 选 1 安装 / 修复")
 
-    # 8) 配置
+    # 8) onefile 解压残留（只提示，不影响功能）
+    try:
+        stale = _mei_dirs(min_age_hours=12)
+        if stale:
+            mbs = sum(s for _p, s, _a in stale) / 1024 / 1024
+            row("warn", "_MEI 临时残留",
+                f"{len(stale)} 个目录 / {mbs:.0f} MB —— 菜单 9 或 clean-temp 可清")
+        else:
+            row("ok", "_MEI 临时残留", "没有超过 12 小时的残留")
+    except Exception:
+        pass
+
+    # 9) 配置
     print(c("\n  当前策略：", "bold"))
     print(f"    空闲 {cfg['idle_minutes']} 分钟暂停 · 最短加速 {cfg['min_accel_minutes']} 分钟"
           f" · 每 {cfg['check_interval_seconds']} 秒检查")
@@ -1672,6 +1743,7 @@ HELP_TEXT = f"""\
   LeigodAutoPause.exe uninstall       取消自启并停止守护
   LeigodAutoPause.exe selftest        离线自检（不碰客户端/网络）
   LeigodAutoPause.exe doctor          体检：自启 / 守护 / 日志 / 网络 / token 逐项检查
+  LeigodAutoPause.exe clean-temp      清理 %TEMP% 里过期的 onefile 解压残留（_MEI*）
   LeigodAutoPause.exe checksum        打印自身 SHA256（对比 Release 的 SHA256SUMS.txt）
   LeigodAutoPause.exe --version       版本号 + 文件路径 + SHA256
   LeigodAutoPause.exe --help          这张帮助
@@ -1732,6 +1804,8 @@ def main(argv: list[str]) -> int:
         return cmd_selftest(cfg)
     if cmd in ("doctor", "check", "diag"):
         return cmd_doctor(cfg)
+    if cmd in ("clean-temp", "clean_temp", "cleantemp"):
+        return cmd_clean_temp(cfg)
     print(HELP_TEXT)
     return 2
 

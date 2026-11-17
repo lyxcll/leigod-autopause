@@ -66,9 +66,19 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
 
 ## 用法
 
-### 最省事：下载 exe，双击就用（免 Python）
+### 最省事：下载就用（免 Python）
 
-[`LeigodAutoPause.exe`](https://github.com/lyxcll/leigod-autopause/releases/latest/download/LeigodAutoPause.exe) ← 点这里下载（8.1 MB，单文件，**不用装 Python**）
+| 下载 | 适合 | 启动 / `status` |
+|---|---|---|
+| [`LeigodAutoPause.exe`](https://github.com/lyxcll/leigod-autopause/releases/latest/download/LeigodAutoPause.exe)（单文件，8.1 MB） | 最省事：一个文件，双击就用 | ~0.7 s / ~1.0 s |
+| [`LeigodAutoPause-portable.zip`](https://github.com/lyxcll/leigod-autopause/releases/latest/download/LeigodAutoPause-portable.zip)（便携版，8.2 MB） | 想要更快：解压即用，不再解压到临时目录 | ~0.1 s / ~0.4 s |
+
+两个版本功能完全一样，只是打包方式不同：
+
+- 单文件版每次启动会先把自身解压到 `%TEMP%\_MEI*`，所以慢 0.5 秒左右；进程被强杀时可能
+  留下解压残留（`doctor` 会提示，菜单 `9` / `clean-temp` 可清）。
+- 便携版是普通文件夹（`LeigodAutoPause.exe` + `_internal\`），启动几乎瞬时、不产生临时目录，
+  代价是要整个解压出来用、别把里面的文件拆散。
 
 1. 放进一个**只有自己能写**的目录，推荐 `%LOCALAPPDATA%\leigod-autopause\`
    （`config.json`、`autopause.log` 都生成在这个目录里；目录不可写时程序会自动改用这个位置）。
@@ -77,7 +87,7 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
 
    ```
    ==========================================================
-     雷神加速器 · 挂机自动暂停   v1.3.1
+     雷神加速器 · 挂机自动暂停   v1.3.2
      目录 D:\Tools\leigod-autopause
      状态 加速中 · 守护中 · D:\LeiGod_Acc
    ==========================================================
@@ -88,9 +98,11 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
      5) 看日志（最近 20 行）
      6) 打开配置文件 config.json
      7) 打开程序目录
+     8) 体检（自启 / 守护 / 日志 / 网络 / token）
+     9) 清理临时文件（onefile 解压残留）
      0) 退出
 
-   请选择 [1-8,0]（直接回车 = 刷新状态）:
+   请选择 [1-9,0]（直接回车 = 刷新状态）:
    ```
 
 3. 按 `1` 回车。它会注册开机自启、立刻在后台跑起来，然后告诉你去看 `autopause.log`。
@@ -158,6 +170,9 @@ LeigodAutoPause.exe checksum
 
 # 8. 一键体检：自启、守护、日志、游戏识别、token、联网逐项查（有问题会指出来）
 python leigod_autopause.py doctor
+
+# 9. 清掉 %TEMP% 里 12 小时前的 onefile 解压残留（只影响单文件版）
+LeigodAutoPause.exe clean-temp
 ```
 
 `status` 输出长这样：
@@ -262,7 +277,7 @@ LeigodAutoPause.exe doctor      # 或 python leigod_autopause.py doctor（菜单
 每一项会给出 ✅ / ⚠️ / ❌，最后一行是结论：
 
 ```
-雷神挂机自动暂停 · 体检 v1.3.1
+雷神挂机自动暂停 · 体检 v1.3.2
 程序目录 C:\Users\me\AppData\Local\leigod-autopause
   ✅ 程序目录可写  C:\Users\me\AppData\Local\leigod-autopause
   ✅ 雷神安装目录  D:\LeiGod_Acc
@@ -308,7 +323,7 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 日志里正常长这样：
 
 ```
-[22:19:19] 👀 开始守护 v1.3.1（pid 40464）：D:\LeiGod_Acc，每 30s 检查一次（空闲阈值 15 分钟，游戏退出即暂停）
+[22:19:19] 👀 开始守护 v1.3.2（pid 40464）：D:\LeiGod_Acc，每 30s 检查一次（空闲阈值 15 分钟，游戏退出即暂停）
 [22:19:20] 📊 当前：加速中（彩虹六号:围攻 X），游戏进程 无（自动识别）
 [22:19:22] ✅ 已暂停（加速中但游戏没在跑，无需再加速（彩虹六号:围攻 X））msg=成功
 ```
@@ -354,7 +369,7 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 同时 VBS 守护循环会在 5 秒后重新拉起，所以「崩一次」通常只丢一次检查。
 
 **怎么看版本？是不是新版？**
-`LeigodAutoPause.exe --version`，或者双击看菜单表头（`v1.3.1`）。`--help` 列出全部命令。
+`LeigodAutoPause.exe --version`，或者双击看菜单表头（`v1.3.2`）。`--help` 列出全部命令。
 
 **之前挂机几个小时都没停？**
 先看日志里有没有 `💓 心跳`。没有 = 进程当时不在（被杀 / 没开机自启），工具再聪明也没用；

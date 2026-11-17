@@ -25,7 +25,7 @@ for _stream in (sys.stdout, sys.stderr):
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(ROOT, "assets")
 APP_NAME = "LeigodAutoPause"
-VERSION = (1, 3, 1, 0)
+VERSION = (1, 3, 2, 0)
 
 
 def make_icon(path: str) -> str | None:
@@ -101,6 +101,7 @@ VERSION_INFO = """VSVersionInfo(
 
 def main() -> int:
     os.chdir(ROOT)
+    onedir = "--onedir" in sys.argv[1:]
     icon = make_icon(os.path.join(ASSETS, "app.ico"))
 
     vinfo = os.path.join(ROOT, "build", "version_info.txt")
@@ -118,7 +119,11 @@ def main() -> int:
 
     args = [
         sys.executable, "-m", "PyInstaller",
-        "--noconfirm", "--clean", "--onefile", "--console",
+        "--noconfirm", "--clean",
+        # onedir：不打包成一个文件，启动时不用解压（快很多、也不留 %TEMP%\_MEI*），
+        # 代价是产物是一个文件夹，得整个解压出来用。
+        "--onedir" if onedir else "--onefile",
+        "--console",
         "--log-level=WARN",
         f"--name={APP_NAME}",
         f"--version-file={vinfo}",
@@ -174,15 +179,25 @@ def main() -> int:
     if r.returncode != 0:
         return r.returncode
 
-    exe = os.path.join(ROOT, "dist", f"{APP_NAME}.exe")
+    exe = os.path.join(ROOT, "dist", APP_NAME, f"{APP_NAME}.exe") if onedir \
+        else os.path.join(ROOT, "dist", f"{APP_NAME}.exe")
     size_mb = os.path.getsize(exe) / 1024 / 1024
     import hashlib
 
     with open(exe, "rb") as f:
         digest = hashlib.sha256(f.read()).hexdigest()
     print(f"\n✅ 打包完成：{exe}")
-    print(f"   体积 {size_mb:.1f} MB · v{'.'.join(str(x) for x in VERSION[:3])}")
+    print(f"   体积 {size_mb:.1f} MB · v{'.'.join(str(x) for x in VERSION[:3])}"
+          f" · {'onedir（免解压）' if onedir else 'onefile（单文件）'}")
     print(f"   SHA256 {digest}")
+
+    if onedir:
+        import shutil
+        base = os.path.join(ROOT, "dist", f"{APP_NAME}-portable")
+        zip_path = shutil.make_archive(base, "zip", root_dir=os.path.join(ROOT, "dist"),
+                                       base_dir=APP_NAME)
+        print(f"\n📦 便携版压缩包：{zip_path}")
+        print(f"   体积 {os.path.getsize(zip_path) / 1024 / 1024:.1f} MB（解压后直接用）")
     return 0
 
 
