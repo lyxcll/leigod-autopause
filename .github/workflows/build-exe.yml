@@ -61,10 +61,12 @@ jobs:
           $zip = "dist\LeigodAutoPause-portable.zip"
           $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
           $zipHash = (Get-FileHash $zip -Algorithm SHA256).Hash
-          @(
-            "{0}  LeigodAutoPause.exe" -f $hash,
-            "{0}  LeigodAutoPause-portable.zip" -f $zipHash
-          ) | Set-Content -Encoding ascii SHA256SUMS.txt
+          # 注意：别写成 @("a" -f $x, "b" -f $y) | Set-Content —— 逗号会和 -f 抢参数，
+          # 结果只写进第一行（v1.3.2 踩过）。逐行 += 最稳。
+          $lines = @()
+          $lines += "{0}  LeigodAutoPause.exe" -f $hash
+          $lines += "{0}  LeigodAutoPause-portable.zip" -f $zipHash
+          $lines | Set-Content -Encoding ascii SHA256SUMS.txt
           Get-Content SHA256SUMS.txt
           $self = (& $exe checksum).Trim()
           if ($self -ne $hash) { throw "exe 自报 $self 与文件哈希 $hash 不一致" }
