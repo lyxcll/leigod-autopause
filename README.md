@@ -3,7 +3,7 @@
 [![CI](https://github.com/lyxcll/leigod-autopause/actions/workflows/ci.yml/badge.svg)](https://github.com/lyxcll/leigod-autopause/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](leigod_autopause.py)
-[![exe](https://img.shields.io/badge/download-.exe%208.9%20MB-6D5BD0.svg)](https://github.com/lyxcll/leigod-autopause/releases/latest/download/LeigodAutoPause.exe)
+[![exe](https://img.shields.io/badge/download-.exe%208.1%20MB-6D5BD0.svg)](https://github.com/lyxcll/leigod-autopause/releases/latest/download/LeigodAutoPause.exe)
 
 挂机 / 出门没关电脑时，自动把**雷神加速器**的计时暂停掉，避免白烧时长。
 
@@ -77,7 +77,7 @@ GitHub 上已有的几个雷神自动暂停项目都是「云端定时暂停」�
 
    ```
    ==========================================================
-     雷神加速器 · 挂机自动暂停   v1.3.0
+     雷神加速器 · 挂机自动暂停   v1.3.1
      目录 D:\Tools\leigod-autopause
      状态 加速中 · 守护中 · D:\LeiGod_Acc
    ==========================================================
@@ -262,7 +262,7 @@ LeigodAutoPause.exe doctor      # 或 python leigod_autopause.py doctor（菜单
 每一项会给出 ✅ / ⚠️ / ❌，最后一行是结论：
 
 ```
-雷神挂机自动暂停 · 体检 v1.3.0
+雷神挂机自动暂停 · 体检 v1.3.1
 程序目录 C:\Users\me\AppData\Local\leigod-autopause
   ✅ 程序目录可写  C:\Users\me\AppData\Local\leigod-autopause
   ✅ 雷神安装目录  D:\LeiGod_Acc
@@ -308,7 +308,7 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 日志里正常长这样：
 
 ```
-[22:19:19] 👀 开始守护 v1.3.0（pid 40464）：D:\LeiGod_Acc，每 30s 检查一次（空闲阈值 15 分钟，游戏退出即暂停）
+[22:19:19] 👀 开始守护 v1.3.1（pid 40464）：D:\LeiGod_Acc，每 30s 检查一次（空闲阈值 15 分钟，游戏退出即暂停）
 [22:19:20] 📊 当前：加速中（彩虹六号:围攻 X），游戏进程 无（自动识别）
 [22:19:22] ✅ 已暂停（加速中但游戏没在跑，无需再加速（彩虹六号:围攻 X））msg=成功
 ```
@@ -354,7 +354,7 @@ wscript "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\LeigodAutoPa
 同时 VBS 守护循环会在 5 秒后重新拉起，所以「崩一次」通常只丢一次检查。
 
 **怎么看版本？是不是新版？**
-`LeigodAutoPause.exe --version`，或者双击看菜单表头（`v1.3.0`）。`--help` 列出全部命令。
+`LeigodAutoPause.exe --version`，或者双击看菜单表头（`v1.3.1`）。`--help` 列出全部命令。
 
 **之前挂机几个小时都没停？**
 先看日志里有没有 `💓 心跳`。没有 = 进程当时不在（被杀 / 没开机自启），工具再聪明也没用；

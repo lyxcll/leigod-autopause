@@ -75,7 +75,7 @@ def _pick_base_dir() -> tuple[str, bool]:
 
 
 BASE_DIR, BASE_DIR_FALLBACK = _pick_base_dir()
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 LOG_PATH = os.path.join(BASE_DIR, "autopause.log")
 TOKEN_CACHE = os.path.join(BASE_DIR, ".token_cache")
@@ -1130,17 +1130,61 @@ def cmd_install(cfg: dict) -> int:
         # 2) 回退：启动文件夹里的 VBS 守护循环
         #    VBScript 里字符串内的双引号要写成两个
         vbs_cmd = cmd.replace('"', '""')
+        # 用 WMI 数进程，而不是 Run(...,True) 守着一个子进程：子进程被强杀后
+        # Run 有可能一直不返回，循环就再也不启动了（v1.3.1 实测踩到）。
+        # 注意：WQL 字符串里的反斜杠是转义符，路径不能直接塞进 LIKE，
+        # 否则查询直接报错（v1.3.1 实测：循环静默不动）。这里按进程名查，
+        # 路径匹配交给 VBScript 的 InStr。
+        if getattr(sys, "frozen", False):
+            proc_name = os.path.basename(sys.executable)
+            want_dir = BASE_DIR
+        else:
+            proc_name = "pythonw.exe"
+            want_dir = os.path.dirname(os.path.abspath(__file__))
         try:
             os.makedirs(os.path.dirname(link), exist_ok=True)
             with open(link, "w", encoding="gbk") as f:
+                # 第一行就先吞错误：wscript 无窗口运行时，未捕获的 VBScript 错误
+                # 会弹一个看不见的模态对话框，把整个循环永久卡死（v1.3.1 实测）。
+                f.write("On Error Resume Next\n")
+                # v1.3.1 调试结果：如果循环是从 install（PyInstaller onefile 进程）
+                # 拉起来的，它会继承 install 的 _MEIPASS 等变量；install 退出后那个
+                # 解压目录被删掉，循环再去拉守护时，守护会照着这个已失效的路径找
+                # 自己的文件，于是静默失败。所以这里先把这些变量从环境里摘掉。
                 f.write('Set sh = CreateObject("WScript.Shell")\n')
+                f.write('Set env = sh.Environment("PROCESS")\n')
+                for var in ("_MEIPASS", "_MEIPASS2", "_PYI_APPLICATION_HOME_DIR",
+                            "_PYI_PARENT_PROCESS_LEVEL"):
+                    f.write(f'env.Remove "{var}"\n')
+                f.write(f'want = "{want_dir}"\n')
                 f.write("Do\n")
-                f.write("  t0 = Timer\n")
-                f.write(f'  sh.Run "{vbs_cmd}", 0, True\n')
-                f.write("  dt = Timer - t0\n")
-                f.write("  If dt < 0 Then dt = dt + 86400\n")
-                # 秒退（说明已经有别的守护在跑）就退避到 60 秒，别每 5 秒拉一次进程
-                f.write("  If dt < 60 Then WScript.Sleep 60000 Else WScript.Sleep 5000\n")
+                # WMI 对象放在循环里取：万一开机早期 WMI 还没就绪，下一轮会自愈
+                f.write('  Set svc = GetObject("winmgmts:\\\\.\\root\\cimv2")\n')
+                f.write('  Set q = svc.ExecQuery("SELECT CommandLine FROM Win32_Process '
+                        f"WHERE Name='{proc_name}'\")\n")
+                f.write("  n = 0\n")
+                f.write("  For Each p In q\n")
+                f.write("    If Not IsNull(p.CommandLine) Then\n")
+                f.write("      If InStr(1, p.CommandLine, want, 1) > 0 Then n = n + 1\n")
+                f.write("    End If\n")
+                f.write("  Next\n")
+                f.write("  If Err.Number <> 0 Then\n")
+                f.write("    Err.Clear\n")
+                f.write("    n = 1\n")   # 探测失败就别乱启动，等下轮再来
+                f.write("  End If\n")
+                f.write("  If n = 0 Then\n")
+                f.write('    sh.Run "' + vbs_cmd + '", 0, False\n')
+                f.write("    If Err.Number <> 0 Then Err.Clear\n")
+                f.write("  End If\n")
+                # 调试钩子：设了 LG_AUTOPAUSE_LOOP_DEBUG 就把每轮结果写进该文件
+                f.write('  dbg = sh.Environment("PROCESS")("LG_AUTOPAUSE_LOOP_DEBUG")\n')
+                f.write('  If dbg <> "" Then\n')
+                f.write('    Set fso = CreateObject("Scripting.FileSystemObject")\n')
+                f.write("    Set lf = fso.OpenTextFile(dbg, 8, True)\n")
+                f.write('    lf.WriteLine Now & " n=" & n & " err=" & Err.Number\n')
+                f.write("    lf.Close\n")
+                f.write("  End If\n")
+                f.write("  WScript.Sleep 10000\n")
                 f.write("Loop\n")
             log(f"✅ 已回退为启动文件夹自启：{link}")
         except Exception as e:
@@ -1159,6 +1203,7 @@ def cmd_install(cfg: dict) -> int:
     else:
         log("提示：现在就能用 `python leigod_autopause.py watch` 手动跑起来")
     _spawn_watch_now()
+    _start_vbs_loop()
     time.sleep(1.5)
     if watcher_alive():
         log("✅ 守护已在后台运行")
@@ -1167,16 +1212,66 @@ def cmd_install(cfg: dict) -> int:
     return 0
 
 
+def _vbs_loop_pid() -> str:
+    """启动文件夹里的 VBS 守护循环在跑吗？返回 pid 字符串（没在跑返回空）。"""
+    ps = (
+        "Get-CimInstance Win32_Process -Filter \"Name='wscript.exe'\" | "
+        "Where-Object { $_.CommandLine -like '*LeigodAutoPause.vbs*' } | "
+        "Select-Object -First 1 -ExpandProperty ProcessId"
+    )
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                             capture_output=True, timeout=20,
+                             creationflags=subprocess.CREATE_NO_WINDOW)
+        return out.stdout.decode("gbk", "ignore").strip()
+    except Exception:
+        return ""
+
+
+def _start_vbs_loop() -> None:
+    """确保「VBS 守护循环」现在就在跑：守护进程没了就 10 秒内拉回来。
+
+    以前只在下次登录时才生效，装完到重启之间没有自愈能力（v1.3.1 修）。
+    如果已经有循环在跑，先结束它再按刚写的新脚本重开 —— 升级后旧脚本可能
+    还是老逻辑（老逻辑在子进程被强杀后可能再也不启动）。
+    """
+    if not os.path.exists(STARTUP_LINK):
+        return
+    pid = _vbs_loop_pid()
+    if pid:
+        subprocess.run(["taskkill", "/F", "/PID", pid],
+                       capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        time.sleep(0.5)
+    try:
+        # 用 cmd 的 start 拉起，等于用户自己敲命令 —— 实测直接 Popen wscript 时
+        # 脚本在无窗口宿主里可能一轮都不跑（v1.3.1 踩到）。
+        subprocess.Popen(["cmd.exe", "/c", "start", "", "wscript.exe", STARTUP_LINK],
+                         cwd=BASE_DIR,
+                         creationflags=0x00000008 | 0x08000000,  # DETACHED | NO_WINDOW
+                         close_fds=True)
+        log("🔁 已启动自启守护循环（守护进程没了会 10 秒内拉回）")
+    except Exception as e:
+        log(f"⚠️ 启动自启循环失败（下次登录仍会自动启动）: {e}")
+    except Exception as e:
+        log(f"⚠️ 启动自启循环失败（下次登录仍会自动启动）: {e}")
+
+
 def _spawn_watch_now() -> None:
     """安装完立刻拉起一个守护，不用等下次登录（已有实例会被互斥量挡住）。"""
     DETACHED = 0x00000008
+    # onefile 的 bootstrap 把解压目录放在 _MEIPASS 里；子进程若继承它，
+    # 父进程退出时会删不掉自己的临时目录（实测每次 install 泄漏约 16 MB，
+    # 还会打印 "Failed to remove temporary directory"）。清掉让子进程自己解压。
+    env = dict(os.environ)
+    for k in ("_MEIPASS", "_MEIPASS2", "_PYI_APPLICATION_HOME_DIR", "_PYI_PARENT_PROCESS_LEVEL"):
+        env.pop(k, None)
     try:
         if getattr(sys, "frozen", False):
             subprocess.Popen([sys.executable, "watch"], cwd=BASE_DIR,
-                             creationflags=DETACHED, close_fds=True)
+                             creationflags=DETACHED, close_fds=True, env=env)
         else:
             subprocess.Popen([_pythonw(), os.path.abspath(__file__), "watch"],
-                             cwd=BASE_DIR, creationflags=DETACHED, close_fds=True)
+                             cwd=BASE_DIR, creationflags=DETACHED, close_fds=True, env=env)
         log("🚀 已拉起后台守护")
     except Exception as e:
         log(f"⚠️ 拉起守护失败（下次登录仍会自动启动）: {e}")
