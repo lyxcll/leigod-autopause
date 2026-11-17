@@ -2,6 +2,19 @@
 
 版本号规则：`主.次.修订`。配置文件向后兼容，旧配置启动时自动补齐新字段。
 
+## v1.3.3 — 关掉那个时不时冒出来的黑窗口
+
+**修：后台守护会弹出控制台窗口**
+
+- 原因：PyInstaller 的 exe 是 console 子系统程序。`install` 拉起守护时虽然用了
+  `DETACHED_PROCESS`，那只是「不继承父控制台」，Windows 仍会给它新建一个控制台；
+  Win11 默认终端是 Windows Terminal，于是时不时多出一个标签页/黑窗口。
+- 修法：启动时加 `CREATE_NO_WINDOW`，并给子进程打上 `LEIGOD_AUTOPAUSE_HIDDEN=1`；
+  守护进程启动时若发现自己被分配了控制台，就 `ShowWindow(SW_HIDE)` + `FreeConsole()`
+  直接脱离控制台（Windows Terminal 的标签页会随之关闭），之后的输出只写日志文件。
+- 自启循环拉起的守护同样带这个标记，所以开机/自愈都不会再冒窗口。
+- 手动双击 exe、`status`/`doctor`/`menu` 仍然正常显示窗口 —— 只有「后台守护」才隐藏。
+
 ## v1.3.2 — 便携版（更快）+ 清理残留
 
 **新增免解压的便携版**

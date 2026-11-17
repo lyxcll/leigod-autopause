@@ -75,7 +75,7 @@ def _pick_base_dir() -> tuple[str, bool]:
 
 
 BASE_DIR, BASE_DIR_FALLBACK = _pick_base_dir()
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 LOG_PATH = os.path.join(BASE_DIR, "autopause.log")
 TOKEN_CACHE = os.path.join(BASE_DIR, ".token_cache")
@@ -86,6 +86,10 @@ STARTUP_LINK = os.path.join(STARTUP_DIR, "LeigodAutoPause.vbs")
 # 全局单实例互斥量；测试可用环境变量换个名字，避免和真正在跑的守护互相干扰
 MUTEX_NAME = os.environ.get("LEIGOD_AUTOPAUSE_MUTEX", r"Local\LeigodAutoPause")
 _MUTEX = None
+# 由 install / 自启循环拉起守护时置 1：守护进程就算被系统分配了控制台，也立刻藏起来。
+# 否则用户会时不时看到一个黑窗口（v1.3.2 实测：DETACHED_PROCESS 对 console 程序
+# 只是「不继承父控制台」，系统仍会给它新建一个可见控制台）。
+HIDE_CONSOLE_ENV = "LEIGOD_AUTOPAUSE_HIDDEN"
 # 进程内小缓存：tasklist / reg query 每次要 200-900 ms，没必要反复问系统
 _INSTALL_CACHE = None      # (extra_dirs, monotonic, dirs)
 _PROC_CACHE = None         # (monotonic, {进程名})
@@ -153,6 +157,31 @@ def setup_console() -> None:
         k32.SetConsoleTitleW(f"雷神加速器 · 挂机自动暂停  v{VERSION}")
     except Exception:
         USE_COLOR = False
+
+
+def hide_console_if_hidden() -> None:
+    """由自启/安装拉起时（HIDE_CONSOLE_ENV=1）把自己的控制台窗口关掉。
+
+    PyInstaller 的 exe 是 console 子系统程序，即使父进程用 CREATE_NO_WINDOW 启动，
+    onefile 的引导进程再拉起真正的子进程时，Windows 仍可能给它分配控制台。
+    Win11 默认终端是 Windows Terminal，此时 ShowWindow 藏不掉那个标签页，
+    必须 FreeConsole 直接脱离控制台（标签页随之关闭），再关掉 stdout 打印。
+    """
+    if os.environ.get(HIDE_CONSOLE_ENV) != "1":
+        return
+    global USE_COLOR
+    try:
+        k32 = ctypes.windll.kernel32
+        hwnd = k32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+        if k32.FreeConsole():
+            # 已经没有控制台了，之后的 print 会抛 OSError；直接置空让 log() 跳过打印
+            sys.stdout = None
+            sys.stderr = None
+        USE_COLOR = False
+    except Exception:
+        pass
 
 
 def c(text: str, color: str = "") -> str:
@@ -982,6 +1011,7 @@ def _note_duplicate_once(hours: float = 1.0) -> None:
 
 
 def cmd_watch(cfg: dict, dry_run: bool = False) -> int:
+    hide_console_if_hidden()
     if not _single_instance():
         _note_duplicate_once()
         return 0
@@ -1156,6 +1186,9 @@ def cmd_install(cfg: dict) -> int:
                 for var in ("_MEIPASS", "_MEIPASS2", "_PYI_APPLICATION_HOME_DIR",
                             "_PYI_PARENT_PROCESS_LEVEL"):
                     f.write(f'env.Remove "{var}"\n')
+                # 循环拉起的守护也别弹黑窗口（console 程序即使 Run(...,0) 也可能被
+                # 系统分配控制台，守护自己会按这个变量把窗口藏起来）
+                f.write(f'env("{HIDE_CONSOLE_ENV}") = "1"\n')
                 f.write(f'want = "{want_dir}"\n')
                 f.write("Do\n")
                 # WMI 对象放在循环里取：万一开机早期 WMI 还没就绪，下一轮会自愈
@@ -1265,13 +1298,16 @@ def _spawn_watch_now() -> None:
     env = dict(os.environ)
     for k in ("_MEIPASS", "_MEIPASS2", "_PYI_APPLICATION_HOME_DIR", "_PYI_PARENT_PROCESS_LEVEL"):
         env.pop(k, None)
+    env[HIDE_CONSOLE_ENV] = "1"
     try:
         if getattr(sys, "frozen", False):
             subprocess.Popen([sys.executable, "watch"], cwd=BASE_DIR,
-                             creationflags=DETACHED, close_fds=True, env=env)
+                             creationflags=DETACHED | 0x08000000,  # DETACHED | CREATE_NO_WINDOW
+                             close_fds=True, env=env)
         else:
             subprocess.Popen([_pythonw(), os.path.abspath(__file__), "watch"],
-                             cwd=BASE_DIR, creationflags=DETACHED, close_fds=True, env=env)
+                             cwd=BASE_DIR, creationflags=DETACHED | 0x08000000,
+                             close_fds=True, env=env)
         log("🚀 已拉起后台守护")
     except Exception as e:
         log(f"⚠️ 拉起守护失败（下次登录仍会自动启动）: {e}")

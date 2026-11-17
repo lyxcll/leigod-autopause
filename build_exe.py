@@ -25,7 +25,7 @@ for _stream in (sys.stdout, sys.stderr):
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(ROOT, "assets")
 APP_NAME = "LeigodAutoPause"
-VERSION = (1, 3, 2, 0)
+VERSION = (1, 3, 3, 0)
 
 
 def make_icon(path: str) -> str | None:
